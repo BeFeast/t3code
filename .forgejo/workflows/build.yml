@@ -20,9 +20,12 @@
 #  - subtree-vendored `.repos/alchemy-effect` has a 160000 gitlink
 #    with no root `.gitmodules` URL. checkout@v4 post `git submodule
 #    foreach` warns (harmless). persist-credentials: false turns that
-#    into a hard error (run 100). sparse-checkout `!/.repos/` then
-#    `git rm --cached` refuses the skip-worktree path (run 102).
-#    Leave the gitlink alone; do not sparse-checkout.
+#    into a hard error (run 100). Leave the gitlink alone.
+#  - Forgejo injects GITHUB_TOKEN / GITHUB_REPOSITORY. electron-builder
+#    then auto-detects a GitHub publish provider and crashes in
+#    computeChannelNames (null.channel) after the AppImage is built
+#    (run 103). Blank those vars for the build step (buildEnv drops
+#    empty strings). The OK Labs patch already returns no publish feed.
 name: build
 
 on:
@@ -117,6 +120,12 @@ jobs:
           pnpm exec vp run --filter @t3tools/desktop ensure:electron
 
       - name: Stamp package.json versions and build AppImage
+        env:
+          # Blank, not unset: build-desktop-artifact copies process.env and
+          # deletes empty values before spawning electron-builder.
+          GITHUB_TOKEN: ""
+          GH_TOKEN: ""
+          GITHUB_REPOSITORY: ""
         run: |
           git config core.hooksPath /tmp/no-hooks
           export PATH="$(pwd)/node_modules/.bin:${HOME}/.cargo/bin:${PATH}"
