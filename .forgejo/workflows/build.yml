@@ -17,12 +17,12 @@
 #  - `vp` is not on PATH after pnpm install. Put node_modules/.bin on
 #    GITHUB_PATH (run 99: bare `vp` missing; run 101: build script
 #    `spawn vp ENOENT`). Same as t3code-oklabs-update.
-#  - subtree-vendored `.repos/alchemy-effect` records a 160000 gitlink
-#    with no root `.gitmodules` URL. checkout@v4 runs
-#    `git submodule foreach` in post (and in-step if
-#    persist-credentials: false — that is a hard error, run 100).
-#    Keep default persist-credentials, sparse-checkout `!/.repos/`
-#    (upstream release.yml), then drop the gitlink from the index.
+#  - subtree-vendored `.repos/alchemy-effect` has a 160000 gitlink
+#    with no root `.gitmodules` URL. checkout@v4 post `git submodule
+#    foreach` warns (harmless). persist-credentials: false turns that
+#    into a hard error (run 100). sparse-checkout `!/.repos/` then
+#    `git rm --cached` refuses the skip-worktree path (run 102).
+#    Leave the gitlink alone; do not sparse-checkout.
 name: build
 
 on:
@@ -65,22 +65,6 @@ jobs:
         with:
           fetch-depth: 0
           submodules: false
-          sparse-checkout: |
-            /*
-            !/.repos/
-          sparse-checkout-cone-mode: false
-
-      - name: Neutralize orphan gitlink under .repos
-        run: |
-          git config --global --add safe.directory "$(pwd)" || true
-          git config --global submodule.recurse false
-          # Drop every unmapped gitlink so checkout@v4 post `git submodule foreach`
-          # is a no-op. .repos is reference-only and not imported by the build.
-          git ls-files -s | awk '$1==160000 {print $4}' | while IFS= read -r p; do
-            git rm --cached -f -- "$p" || true
-          done
-          rm -rf .repos
-          git ls-files -s | awk '$1==160000 {exit 1}'
 
       - name: Install Node 24.13.1 + pnpm 11.10.0 + Rust
         run: |
