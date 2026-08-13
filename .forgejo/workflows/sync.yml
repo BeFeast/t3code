@@ -1,0 +1,62 @@
+# Daily upstream sync (oklabs-forks platform template, instantiated for t3code).
+#
+# Identity invariant (do not change):
+#  - branch `upstream` is pushed with the AUTOMATIC token (doer=ActionsUser =>
+#    triggers no workflows, ever) and with --force (mirror semantics);
+#  - branch `main` is pushed with the bot PAT (org secret OKLABS_BOT_PAT) so
+#    the push DOES trigger build.yml (recursion guard exempts real users only).
+#  - checkout uses persist-credentials: false.
+name: sync
+
+on:
+  schedule:
+    - cron: "07 6 * * *" # after handy/tolaria/ferdium morning wave
+  workflow_dispatch:
+
+env:
+  UPSTREAM_URL: https://github.com/pingdotgg/t3code.git
+  UPSTREAM_BRANCH: main
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Sync upstream branch and rebase main
+        env:
+          OKLABS_BOT_PAT: ${{ secrets.OKLABS_BOT_PAT }}
+        run: |
+          git config user.name  'OK Labs'
+          git config user.email 'oleg@befeast.com'
+          mkdir -p /tmp/no-hooks && git config core.hooksPath /tmp/no-hooks
+          export HUSKY=0 CI=true
+
+          git fetch origin '+refs/heads/upstream:refs/remotes/origin/upstream' || true
+          OLD=$(git rev-parse origin/upstream 2>/dev/null || echo none)
+          git remote add github "$UPSTREAM_URL"
+          git fetch github "$UPSTREAM_BRANCH" --tags
+          NEW=$(git rev-parse FETCH_HEAD)
+          echo "upstream: $OLD -> $NEW"
+          [ "$OLD" = "$NEW" ] && { echo "no upstream changes"; exit 0; }
+
+          git push --force "https://x-access-token:${GITHUB_TOKEN}@git.oklabs.uk/${GITHUB_REPOSITORY}.git" "$NEW:refs/heads/upstream"
+          git push --force "https://x-access-token:${GITHUB_TOKEN}@git.oklabs.uk/${GITHUB_REPOSITORY}.git" --tags || true
+
+          MAIN_OLD=$(git rev-parse origin/main)
+          git checkout -B main origin/main
+          git rebase "$NEW" main
+
+          git push --force-with-lease=refs/heads/main:"$MAIN_OLD" \
+            "https://oklabs-bot:${OKLABS_BOT_PAT}@git.oklabs.uk/${GITHUB_REPOSITORY}.git" main
+
+      - name: Alert on failure
+        if: failure()
+        run: |
+          curl -s -H 'Priority: urgent' \
+            -d "sync FAILED for ${GITHUB_REPOSITORY} (rebase conflict?) ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions" \
+            https://ntfy.oklabs.uk/oklabs-forks || true

@@ -1,0 +1,18 @@
+# OK Labs install/activation manifest for the t3code package.
+# Baked into the .deb as /usr/share/oklabs/t3code/install.yml.
+package: t3code
+
+# AppImage swap is inode-safe while the GUI is running (FUSE holds the old
+# file). Install immediately; only the systemd restart is gated.
+when_app_running: proceed
+
+activate:
+  strategy: idle-aware
+  service: t3-code
+  # Same probe as /usr/local/bin/t3code-oklabs-update t3_busy(): any child of
+  # the embedded server other than t3-resource-monitor means a live agent turn.
+
+verify:
+  - /opt/t3code/T3-Code.AppImage
+  - /opt/t3code/.oklabs-managed
+  - /usr/bin/t3-code

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=T3 Code
+Comment=T3 Code desktop (OK Labs fork)
+Exec=/usr/bin/t3-code %U
+TryExec=/usr/bin/t3-code
+Terminal=false
+Categories=Development;IDE;
+StartupNotify=true
+StartupWMClass=t3code

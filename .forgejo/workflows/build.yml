@@ -1,0 +1,179 @@
+# Build the OK Labs T3 Code AppImage, wrap it in a .deb, publish the .deb to
+# the org apt repo, and publish the matching server tarball to the generic
+# registry. Desktop and server MUST share the same VERSION string (T3 compares
+# them byte-for-byte). Mechanics replicate t3code-oklabs-update +
+# t3code-oklabs-publish-server — see the vault runbook t3code-oklabs-build.md.
+#
+# Gotchas baked in (do not "simplify" away):
+#  - Node 24.13.1 + pnpm 11.10.0 (engines / packageManager). System node 22
+#    is not enough;
+#  - stamp 4 package.json files via update-release-package-versions.ts
+#    ( --build-version only brands the artifact; handshake version comes
+#    from the bundled package.json);
+#  - do not use npm publish / npm pack for the server tarball;
+#  - generic registry keeps +oklabs.* verbatim (npm registry would strip it);
+#  - no `| head` / `grep -q` on pipes (SIGPIPE=141 under pipefail);
+#  - container = SAME Ubuntu as the fleet (26.04).
+name: build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.repository }}
+  cancel-in-progress: false
+
+env:
+  DEBIAN_FRONTEND: noninteractive
+  HUSKY: "0"
+  CI: "true"
+  NODE_VERSION: "24.13.1"
+  PNPM_VERSION: "11.10.0"
+  NODE_OPTIONS: "--max-old-space-size=4096"
+  COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+
+jobs:
+  build-deb:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    container:
+      image: docker.io/library/ubuntu:26.04
+    steps:
+      - name: Prep container (node for JS actions)
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl git jq xz-utils python3 python3-yaml \
+            build-essential pkg-config file \
+            fakeroot squashfs-tools imagemagick \
+            libfuse2t64
+
+      - name: Checkout
+        uses: https://code.forgejo.org/actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Node 24.13.1 + pnpm 11.10.0 + Rust
+        run: |
+          curl -fsSL --retry 3 -o /tmp/node.tar.xz \
+            "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz"
+          tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1
+          node --version
+          corepack enable
+          corepack prepare "pnpm@${PNPM_VERSION}" --activate
+          pnpm --version
+          curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          "$HOME/.cargo/bin/rustup" target add x86_64-unknown-linux-gnu
+
+      - name: Cache pnpm / cargo / electron (best effort)
+        uses: https://code.forgejo.org/actions/cache@v4
+        continue-on-error: true
+        with:
+          path: |
+            ~/.local/share/pnpm/store
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cache/electron
+            ~/.cache/electron-builder
+            native/resource-monitor/target
+          key: t3code-build-${{ hashFiles('pnpm-lock.yaml', 'native/resource-monitor/Cargo.lock') }}
+          restore-keys: |
+            t3code-build-
+
+      - name: Version stamp (committer date — monotonic, rebuild-idempotent)
+        run: |
+          git config --global --add safe.directory "$(pwd)" || true
+          mkdir -p /tmp/no-hooks
+          git config core.hooksPath /tmp/no-hooks
+          BASE=$(git tag --sort=-creatordate | awk 'NR==1{print; exit}')
+          BASE=${BASE#v}
+          test -n "$BASE"
+          STAMP=$(TZ=UTC git show -s --format=%cd --date=format-local:%Y%m%d%H%M HEAD)
+          SHA7=$(git rev-parse --short=7 HEAD)
+          echo "OKLABS_VERSION=${BASE}+oklabs.${STAMP}.${SHA7}" >> "$GITHUB_ENV"
+          echo "version: ${BASE}+oklabs.${STAMP}.${SHA7}"
+
+      - name: Install JS deps + ensure electron
+        run: |
+          git config core.hooksPath /tmp/no-hooks
+          pnpm install --frozen-lockfile
+          vp run --filter @t3tools/desktop ensure:electron
+
+      - name: Stamp package.json versions and build AppImage
+        run: |
+          git config core.hooksPath /tmp/no-hooks
+          RELEASE_PKG_FILES=(apps/server/package.json apps/desktop/package.json
+            apps/web/package.json packages/contracts/package.json)
+          cleanup() { git checkout -q -- "${RELEASE_PKG_FILES[@]}" 2>/dev/null || true; }
+          trap cleanup EXIT
+          node scripts/update-release-package-versions.ts "$OKLABS_VERSION"
+          rm -rf release
+          node scripts/build-desktop-artifact.ts --platform linux --target AppImage --arch x64 \
+            --build-version "$OKLABS_VERSION"
+          APPIMG=$(ls -1t release/*.AppImage | awk 'NR==1{print; exit}')
+          test -n "$APPIMG" && test -f "$APPIMG"
+          echo "APPIMAGE=$APPIMG" >> "$GITHUB_ENV"
+          test -x native/resource-monitor/target/x86_64-unknown-linux-gnu/release/t3-resource-monitor
+
+      - name: Wrap AppImage in .deb
+        run: |
+          chmod +x .oklabs/build-deb.sh .oklabs/t3-code .oklabs/publish-server.sh
+          .oklabs/build-deb.sh "$OKLABS_VERSION" "$APPIMAGE"
+          dpkg-deb --field build/t3code_*.deb Package Version Architecture Depends
+          VER=$(dpkg-deb -f build/t3code_*.deb Version)
+          [ "$VER" = "$OKLABS_VERSION" ] || { echo "deb Version $VER != $OKLABS_VERSION"; exit 1; }
+          dpkg-deb -c build/t3code_*.deb | grep -F opt/t3code/T3-Code.AppImage
+          dpkg-deb -c build/t3code_*.deb | grep -F usr/share/oklabs/t3code/install.yml
+          dpkg-deb -c build/t3code_*.deb | grep -F opt/t3code/.oklabs-managed
+
+      - name: Upload desktop artifact
+        uses: https://code.forgejo.org/forgejo/upload-artifact@v4
+        with:
+          name: t3code-deb-ubuntu-26.04
+          path: build/t3code_*.deb
+
+      - name: Publish .deb to org apt repo
+        env:
+          OKLABS_BOT_PAT: ${{ secrets.OKLABS_BOT_PAT }}
+        run: |
+          DEB=$(ls build/t3code_*.deb)
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' --user "oklabs-bot:${OKLABS_BOT_PAT}" \
+            --upload-file "$DEB" \
+            https://git.oklabs.uk/api/packages/BeFeast/debian/pool/resolute/main/upload)
+          case "$CODE" in
+            201) echo "published" ;;
+            409) echo "already published (idempotent skip)" ;;
+            *)   echo "upload failed: $CODE"; exit 1 ;;
+          esac
+          VER=$(dpkg-deb -f "$DEB" Version)
+          for i in 1 2 3 4 5 6; do
+            curl -s -o /tmp/Packages \
+              https://git.oklabs.uk/api/packages/BeFeast/debian/dists/resolute/main/binary-amd64/Packages || true
+            grep -F "Version: $VER" /tmp/Packages && exit 0
+            sleep 10
+          done
+          echo "version $VER not visible in apt index"
+          exit 1
+
+      - name: Publish server tarball (same VERSION)
+        env:
+          OKLABS_BOT_PAT: ${{ secrets.OKLABS_BOT_PAT }}
+          VERSION: ${{ env.OKLABS_VERSION }}
+        run: |
+          .oklabs/publish-server.sh
+
+      - name: Upload server tarball artifact
+        uses: https://code.forgejo.org/forgejo/upload-artifact@v4
+        with:
+          name: t3-server-tarball
+          path: build/t3-*.tgz
+
+      - name: Alert on failure
+        if: failure()
+        run: |
+          curl -s -H 'Priority: urgent' \
+            -d "build FAILED for ${GITHUB_REPOSITORY} ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions" \
+            https://ntfy.oklabs.uk/oklabs-forks || true

@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Wrapper shipped by the t3code .deb. Points at the packaged AppImage so
+# desktop files and t3-code.service do not hard-code a home path.
+set -euo pipefail
+APP=/opt/t3code/T3-Code.AppImage
+if [[ ! -x "$APP" ]]; then
+  echo "t3-code: $APP is missing" >&2
+  exit 127
+fi
+exec env T3CODE_DISABLE_AUTO_UPDATE=1 "$APP" --password-store=gnome-libsecret "$@"
