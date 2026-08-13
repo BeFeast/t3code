@@ -17,10 +17,11 @@
 #  - `vp` is not on PATH after pnpm install — use `pnpm exec vp`
 #    (run 99 died with `vp: command not found`);
 #  - subtree-vendored `.repos/alchemy-effect` records a 160000 gitlink
-#    with no root `.gitmodules` URL. checkout@v4 post always runs
-#    `git submodule foreach` and warns. Match upstream release.yml:
-#    sparse-checkout excludes `/.repos/`, then drop the gitlink from
-#    the index so post-checkout is clean.
+#    with no root `.gitmodules` URL. checkout@v4 runs
+#    `git submodule foreach` in post (and in-step if
+#    persist-credentials: false — that is a hard error, run 100).
+#    Keep default persist-credentials, sparse-checkout `!/.repos/`
+#    (upstream release.yml), then drop the gitlink from the index.
 name: build
 
 on:
@@ -63,7 +64,6 @@ jobs:
         with:
           fetch-depth: 0
           submodules: false
-          persist-credentials: false
           sparse-checkout: |
             /*
             !/.repos/
