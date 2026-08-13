@@ -14,8 +14,9 @@
 #  - generic registry keeps +oklabs.* verbatim (npm registry would strip it);
 #  - no `| head` / `grep -q` on pipes (SIGPIPE=141 under pipefail);
 #  - container = SAME Ubuntu as the fleet (26.04);
-#  - `vp` is not on PATH after pnpm install — use `pnpm exec vp`
-#    (run 99 died with `vp: command not found`);
+#  - `vp` is not on PATH after pnpm install. Put node_modules/.bin on
+#    GITHUB_PATH (run 99: bare `vp` missing; run 101: build script
+#    `spawn vp ENOENT`). Same as t3code-oklabs-update.
 #  - subtree-vendored `.repos/alchemy-effect` records a 160000 gitlink
 #    with no root `.gitmodules` URL. checkout@v4 runs
 #    `git submodule foreach` in post (and in-step if
@@ -73,10 +74,13 @@ jobs:
         run: |
           git config --global --add safe.directory "$(pwd)" || true
           git config --global submodule.recurse false
-          # Drop the unmapped gitlink so checkout@v4 post `git submodule foreach`
-          # does not warn. .repos is reference-only and not imported by the build.
-          git rm --cached -f --ignore-unmatch .repos/alchemy-effect/.vendor/alchemy || true
+          # Drop every unmapped gitlink so checkout@v4 post `git submodule foreach`
+          # is a no-op. .repos is reference-only and not imported by the build.
+          git ls-files -s | awk '$1==160000 {print $4}' | while IFS= read -r p; do
+            git rm --cached -f -- "$p" || true
+          done
           rm -rf .repos
+          git ls-files -s | awk '$1==160000 {exit 1}'
 
       - name: Install Node 24.13.1 + pnpm 11.10.0 + Rust
         run: |
@@ -123,11 +127,17 @@ jobs:
         run: |
           git config core.hooksPath /tmp/no-hooks
           pnpm install --frozen-lockfile
+          echo "$(pwd)/node_modules/.bin" >> "$GITHUB_PATH"
+          export PATH="$(pwd)/node_modules/.bin:$PATH"
+          command -v vp
           pnpm exec vp run --filter @t3tools/desktop ensure:electron
 
       - name: Stamp package.json versions and build AppImage
         run: |
           git config core.hooksPath /tmp/no-hooks
+          export PATH="$(pwd)/node_modules/.bin:${HOME}/.cargo/bin:${PATH}"
+          command -v vp
+          command -v cargo
           RELEASE_PKG_FILES=(apps/server/package.json apps/desktop/package.json
             apps/web/package.json packages/contracts/package.json)
           cleanup() { git checkout -q -- "${RELEASE_PKG_FILES[@]}" 2>/dev/null || true; }
