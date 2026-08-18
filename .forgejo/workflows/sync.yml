@@ -5,7 +5,15 @@
 #    triggers no workflows, ever) and with --force (mirror semantics);
 #  - branch `main` is pushed with the bot PAT (org secret OKLABS_BOT_PAT) so
 #    the push DOES trigger build.yml (recursion guard exempts real users only).
-#  - checkout uses persist-credentials: false.
+#  - no credentials persisted in git config (manual fetch below, token only
+#    ever appears in one-shot fetch/push URLs).
+#
+# t3code delta vs the template: checkout@v4 is NOT used. Upstream vendors
+# .repos/alchemy-effect with a nested 160000 gitlink that has no .gitmodules
+# URL; the action's "Removing auth" phase (git submodule foreach --recursive)
+# hard-fails on it under persist-credentials: false — every sync 2026-08-14..18
+# died inside checkout before the sync script ran. A plain fetch never runs
+# submodule commands. Same gotcha documented in build.yml.
 name: sync
 
 on:
@@ -22,10 +30,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: https://code.forgejo.org/actions/checkout@v4
-        with:
-          fetch-depth: 0
-          persist-credentials: false
+      - name: Fetch fork (full history, no checkout action)
+        run: |
+          git init -b main .
+          git remote add origin "https://git.oklabs.uk/${GITHUB_REPOSITORY}.git"
+          git fetch "https://x-access-token:${GITHUB_TOKEN}@git.oklabs.uk/${GITHUB_REPOSITORY}.git" \
+            '+refs/heads/*:refs/remotes/origin/*' --tags
+          git checkout -B main origin/main
 
       - name: Sync upstream branch and rebase main
         env:
