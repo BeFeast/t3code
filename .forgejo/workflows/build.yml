@@ -197,6 +197,44 @@ jobs:
           name: t3-server-tarball
           path: build/t3-*.tgz
 
+      # Quality gate that REPORTS but never BLOCKS (decision 2026-08-22).
+      # Until now this workflow ran no lint, no typecheck and no tests at all,
+      # so "green build" only ever meant "the artifact linked" — an upstream
+      # lint rule landed on 2026-08-19 that three OK Labs files violated and
+      # two builds went green over it. A fork with no second reviewer must not
+      # have its .deb stopped by a style rule, so this runs AFTER publishing:
+      # delivery speed is untouched, and every command swallows its exit code
+      # so the job cannot fail here and mis-fire the "build FAILED" alert
+      # below. Tests are scoped to web+desktop — the fork's whole patch
+      # surface — because the server suite wants infrastructure this container
+      # does not have, and a false alert trains you to ignore real ones.
+      - name: Quality checks (non-blocking)
+        run: |
+          export PATH="$(pwd)/node_modules/.bin:$PATH"
+          failed=""
+          pnpm run lint      >/tmp/q-lint.log      2>&1 || failed="${failed} lint"
+          pnpm run typecheck >/tmp/q-typecheck.log 2>&1 || failed="${failed} typecheck"
+          vp run --filter @t3tools/web --filter @t3tools/desktop test \
+                             >/tmp/q-test.log      2>&1 || failed="${failed} test"
+          for f in lint typecheck test; do
+            echo "----- ${f} (tail) -----"
+            tail -60 "/tmp/q-${f}.log" 2>/dev/null || true
+          done
+          failed="${failed# }"
+          echo "QUALITY_FAILED=${failed}" >>"$GITHUB_ENV"
+          if [ -n "$failed" ]; then
+            echo "quality checks FAILED: ${failed} — not blocking, .deb is already published"
+          else
+            echo "quality checks passed"
+          fi
+
+      - name: Alert on failed quality checks
+        if: env.QUALITY_FAILED != ''
+        run: |
+          curl -s -H 'Priority: high' \
+            -d "t3code quality checks FAILED (${QUALITY_FAILED}) — .deb ${OKLABS_VERSION} still published, fix at leisure. ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions" \
+            https://ntfy.oklabs.uk/oklabs-forks || true
+
       - name: Alert on failure
         if: failure()
         run: |
