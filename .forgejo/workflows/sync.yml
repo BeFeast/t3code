@@ -65,9 +65,27 @@ jobs:
           git push --force-with-lease=refs/heads/main:"$MAIN_OLD" \
             "https://oklabs-bot:${OKLABS_BOT_PAT}@git.oklabs.uk/${GITHUB_REPOSITORY}.git" main
 
+      # Telegram is the channel that actually reaches a human; the ntfy topic
+      # has no subscriber and is kept only because the oklabs-forks template
+      # uses it. This is the EARLIEST possible signal — it fires at 06:07 on
+      # the morning the rebase breaks, whereas the sindri heartbeat needs
+      # ~14h of accumulated lag to notice. Both sends swallow their exit code
+      # so a notification outage can never fail the job, and both print their
+      # HTTP status so the run log says whether delivery actually happened.
       - name: Alert on failure
         if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          curl -s -H 'Priority: urgent' \
-            -d "sync FAILED for ${GITHUB_REPOSITORY} (rebase conflict?) ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions" \
-            https://ntfy.oklabs.uk/oklabs-forks || true
+          MSG="t3code sync FAILED — fork main stops advancing until this is resolved. Usually a rebase conflict: resolve in a worktree (runbook gotcha 10). ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions"
+          curl -s -H 'Priority: urgent' -d "$MSG" https://ntfy.oklabs.uk/oklabs-forks || true
+          if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
+            code=$(curl -s -m 20 -o /dev/null -w '%{http_code}' \
+              -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+              --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+              --data-urlencode "text=${MSG}" || echo 000)
+            echo "telegram sendMessage -> ${code}"
+          else
+            echo "telegram secrets absent — skipped"
+          fi

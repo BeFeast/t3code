@@ -237,19 +237,41 @@ jobs:
       # and the step now always runs, so its log states plainly which way it
       # went.
       - name: Alert on failed quality checks
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           if [ -z "${QUALITY_FAILED:-}" ]; then
             echo "quality checks passed — no alert"
             exit 0
           fi
+          MSG="t3code quality checks FAILED (${QUALITY_FAILED}) — .deb ${OKLABS_VERSION} still published, fix at leisure. ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions"
           echo "alerting: ${QUALITY_FAILED}"
-          curl -s -H 'Priority: high' \
-            -d "t3code quality checks FAILED (${QUALITY_FAILED}) — .deb ${OKLABS_VERSION} still published, fix at leisure. ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions" \
-            https://ntfy.oklabs.uk/oklabs-forks || true
+          curl -s -H 'Priority: high' -d "$MSG" https://ntfy.oklabs.uk/oklabs-forks || true
+          if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
+            code=$(curl -s -m 20 -o /dev/null -w '%{http_code}' \
+              -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+              --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+              --data-urlencode "text=${MSG}" || echo 000)
+            echo "telegram sendMessage -> ${code}"
+          else
+            echo "telegram secrets absent — skipped"
+          fi
 
       - name: Alert on failure
         if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          curl -s -H 'Priority: urgent' \
-            -d "build FAILED for ${GITHUB_REPOSITORY} ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions" \
-            https://ntfy.oklabs.uk/oklabs-forks || true
+          MSG="t3code build FAILED — no new .deb or server tarball published. ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions"
+          curl -s -H 'Priority: urgent' -d "$MSG" https://ntfy.oklabs.uk/oklabs-forks || true
+          if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
+            code=$(curl -s -m 20 -o /dev/null -w '%{http_code}' \
+              -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+              --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+              --data-urlencode "text=${MSG}" || echo 000)
+            echo "telegram sendMessage -> ${code}"
+          else
+            echo "telegram secrets absent — skipped"
+          fi
