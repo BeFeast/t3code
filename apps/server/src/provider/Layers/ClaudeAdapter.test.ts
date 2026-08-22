@@ -464,6 +464,35 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("hands the session cwd to the runtime instructions on the preset system prompt", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "auto",
+        cwd: "/tmp/claude-adapter-test",
+      });
+
+      // oklabs: the path-link rules ride on the shared runtime instructions and
+      // are useless without the live root. This is the only wiring check.
+      const systemPrompt = harness.getLastCreateQueryInput()?.options.systemPrompt;
+      const append =
+        typeof systemPrompt === "object" &&
+        !Array.isArray(systemPrompt) &&
+        systemPrompt.type === "preset"
+          ? systemPrompt.append
+          : undefined;
+      assert.ok(
+        append?.includes("The workspace root for this session is: /tmp/claude-adapter-test"),
+      );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("derives auto permission mode from auto runtime policy without skip flag", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
