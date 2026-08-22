@@ -228,9 +228,21 @@ jobs:
             echo "quality checks passed"
           fi
 
+      # Guarded in the shell rather than with `if: env.QUALITY_FAILED != ''`.
+      # A skipped step is indistinguishable from a step whose condition never
+      # saw the variable, so an `if:` here could silently never fire and we
+      # would not know until a real failure went unreported. Reading the env
+      # var in bash uses the same GITHUB_ENV path that already demonstrably
+      # works in this job (OKLABS_VERSION reaches the published .deb name),
+      # and the step now always runs, so its log states plainly which way it
+      # went.
       - name: Alert on failed quality checks
-        if: env.QUALITY_FAILED != ''
         run: |
+          if [ -z "${QUALITY_FAILED:-}" ]; then
+            echo "quality checks passed — no alert"
+            exit 0
+          fi
+          echo "alerting: ${QUALITY_FAILED}"
           curl -s -H 'Priority: high' \
             -d "t3code quality checks FAILED (${QUALITY_FAILED}) — .deb ${OKLABS_VERSION} still published, fix at leisure. ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions" \
             https://ntfy.oklabs.uk/oklabs-forks || true
