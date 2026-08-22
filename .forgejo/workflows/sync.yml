@@ -78,14 +78,19 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          MSG="t3code sync FAILED — fork main stops advancing until this is resolved. Usually a rebase conflict: resolve in a worktree (runbook gotcha 10). ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions"
-          curl -s -H 'Priority: urgent' -d "$MSG" https://ntfy.oklabs.uk/oklabs-forks || true
-          if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
-            code=$(curl -s -m 20 -o /dev/null -w '%{http_code}' \
+          MSG="t3code sync FAILED — fork main stops advancing until this is resolved. Most often a rebase conflict (resolve in a worktree, runbook gotcha 10); check the log for which step died. ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_NUMBER}"
+          # The fetch step is what puts .oklabs/notify.sh on disk, and it is
+          # itself a step that can fail — that is exactly how 2026-08-14..18
+          # played out. Fall back to a bare Telegram send so the one failure
+          # mode that leaves no helper still reaches a human.
+          if [ -x .oklabs/notify.sh ]; then
+            .oklabs/notify.sh urgent "$MSG"
+          elif [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
+            code=$(curl -s -m 20 --connect-timeout 5 -o /dev/null -w '%{http_code}' \
               -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
               --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
-              --data-urlencode "text=${MSG}" || echo 000)
-            echo "telegram sendMessage -> ${code}"
+              --data-urlencode "text=${MSG}") || true
+            echo "notify.sh absent (fetch failed before checkout); direct telegram -> ${code:-000}"
           else
-            echo "telegram secrets absent — skipped"
+            echo "notify.sh absent and telegram secrets absent — no alert possible"
           fi

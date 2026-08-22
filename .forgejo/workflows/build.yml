@@ -178,7 +178,11 @@ jobs:
           for i in 1 2 3 4 5 6; do
             curl -s -o /tmp/Packages \
               https://git.oklabs.uk/api/packages/BeFeast/debian/dists/resolute/main/binary-amd64/Packages || true
-            grep -F "Version: $VER" /tmp/Packages && exit 0
+            grep -F "Version: $VER" /tmp/Packages && {
+              # Record what actually shipped: the failure alert must not guess.
+              echo "DEB_PUBLISHED=1" >>"$GITHUB_ENV"
+              exit 0
+            }
             sleep 10
           done
           echo "version $VER not visible in apt index"
@@ -190,6 +194,7 @@ jobs:
           VERSION: ${{ env.OKLABS_VERSION }}
         run: |
           .oklabs/publish-server.sh
+          echo "SERVER_PUBLISHED=1" >>"$GITHUB_ENV"
 
       - name: Upload server tarball artifact
         uses: https://code.forgejo.org/forgejo/upload-artifact@v4
@@ -245,18 +250,8 @@ jobs:
             echo "quality checks passed — no alert"
             exit 0
           fi
-          MSG="t3code quality checks FAILED (${QUALITY_FAILED}) — .deb ${OKLABS_VERSION} still published, fix at leisure. ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions"
           echo "alerting: ${QUALITY_FAILED}"
-          curl -s -H 'Priority: high' -d "$MSG" https://ntfy.oklabs.uk/oklabs-forks || true
-          if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
-            code=$(curl -s -m 20 -o /dev/null -w '%{http_code}' \
-              -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-              --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
-              --data-urlencode "text=${MSG}" || echo 000)
-            echo "telegram sendMessage -> ${code}"
-          else
-            echo "telegram secrets absent — skipped"
-          fi
+          .oklabs/notify.sh high "t3code quality checks FAILED (${QUALITY_FAILED}) — .deb ${OKLABS_VERSION} IS published and installable, fix at leisure. ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_NUMBER}"
 
       - name: Alert on failure
         if: failure()
@@ -264,14 +259,15 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          MSG="t3code build FAILED — no new .deb or server tarball published. ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions"
-          curl -s -H 'Priority: urgent' -d "$MSG" https://ntfy.oklabs.uk/oklabs-forks || true
-          if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
-            code=$(curl -s -m 20 -o /dev/null -w '%{http_code}' \
-              -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-              --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
-              --data-urlencode "text=${MSG}" || echo 000)
-            echo "telegram sendMessage -> ${code}"
+          # Never assert publish state we did not observe. This step fires for
+          # failures both before and after the apt upload, and the worst case —
+          # .deb live, server tarball missing — is the byte-for-byte version
+          # skew this file's header forbids. Report the markers, not a guess.
+          if [ -n "${DEB_PUBLISHED:-}" ] && [ -n "${SERVER_PUBLISHED:-}" ]; then
+            STATE=".deb and server tarball ${OKLABS_VERSION} were both published before the failure"
+          elif [ -n "${DEB_PUBLISHED:-}" ]; then
+            STATE="WARNING: .deb ${OKLABS_VERSION} is published but the server tarball is NOT — client/server version skew until this is fixed"
           else
-            echo "telegram secrets absent — skipped"
+            STATE="nothing was published"
           fi
+          .oklabs/notify.sh urgent "t3code build FAILED — ${STATE}. ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_NUMBER}"
