@@ -97,9 +97,16 @@ export function resolveRemoteOpenState(input: {
 }
 
 export function useRemoteOpenResolution(environmentId: EnvironmentId | null): RemoteOpenResolution {
-  const { presentation } = useEnvironmentPresentation(environmentId);
+  const { presentation, isReady } = useEnvironmentPresentation(environmentId);
 
   return useMemo(() => {
+    // A catalog that has not loaded yet knows nothing, and "nothing" must not
+    // read as "the server is this machine" -- that is how a click on a remote
+    // thread ends up exec'ing an editor on a headless host and reporting
+    // success. Only a loaded catalog with no entry means local.
+    if (!isReady) {
+      return { state: REMOTE_UNAVAILABLE, isResolved: false };
+    }
     if (presentation === null) {
       return UNRESOLVED_REMOTE_OPEN;
     }
@@ -115,7 +122,7 @@ export function useRemoteOpenResolution(environmentId: EnvironmentId | null): Re
       }),
       isResolved: true,
     };
-  }, [presentation]);
+  }, [presentation, isReady]);
 }
 
 export function useRemoteOpenState(environmentId: EnvironmentId | null): RemoteOpenState {
