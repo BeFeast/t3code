@@ -2,9 +2,17 @@ import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import { beforeEach, vi } from "vite-plus/test";
 
-const { openExternalMock, writeTextMock } = vi.hoisted(() => ({
+const { openExternalMock, writeTextMock, desktopHandlerMock } = vi.hoisted(() => ({
   openExternalMock: vi.fn(),
   writeTextMock: vi.fn(),
+  desktopHandlerMock: vi.fn(),
+}));
+
+// Editor deep links deliberately bypass Electron's opener on Linux, because the
+// desktop portal drops non-web schemes while still reporting success.
+vi.mock("@t3tools/shared/shell", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@t3tools/shared/shell")>()),
+  openUrlWithDesktopHandler: desktopHandlerMock,
 }));
 
 vi.mock("electron", () => ({
@@ -22,6 +30,8 @@ describe("ElectronShell", () => {
   beforeEach(() => {
     openExternalMock.mockReset();
     writeTextMock.mockReset();
+    desktopHandlerMock.mockReset();
+    desktopHandlerMock.mockResolvedValue(true);
   });
 
   it.effect("opens safe external URLs", () =>
@@ -82,9 +92,10 @@ describe("ElectronShell", () => {
       );
 
       assert.equal(result, true);
-      assert.deepEqual(openExternalMock.mock.calls, [
+      assert.deepEqual(desktopHandlerMock.mock.calls, [
         ["vscode://vscode-remote/ssh-remote+example.com/home/user/project"],
       ]);
+      assert.equal(openExternalMock.mock.calls.length, 0);
     }).pipe(Effect.provide(ElectronShell.layer)),
   );
 
@@ -99,10 +110,11 @@ describe("ElectronShell", () => {
       ]);
 
       assert.deepEqual(results, [true, true]);
-      assert.deepEqual(openExternalMock.mock.calls, [
+      assert.deepEqual(desktopHandlerMock.mock.calls, [
         ["zed://ssh/example.com/home/user/project"],
         ["zed://ssh/example.com/"],
       ]);
+      assert.equal(openExternalMock.mock.calls.length, 0);
     }).pipe(Effect.provide(ElectronShell.layer)),
   );
 
@@ -118,6 +130,19 @@ describe("ElectronShell", () => {
 
       assert.deepEqual(results, [false, false]);
       assert.equal(openExternalMock.mock.calls.length, 0);
+    }).pipe(Effect.provide(ElectronShell.layer)),
+  );
+
+  it.effect("falls back to Electron when the desktop handler cannot spawn", () =>
+    Effect.gen(function* () {
+      desktopHandlerMock.mockResolvedValue(false);
+      openExternalMock.mockResolvedValue(undefined);
+
+      const electronShell = yield* ElectronShell.ElectronShell;
+      const result = yield* electronShell.openExternal("zed://ssh/maestro/home/god/src/x.ts");
+
+      assert.equal(result, true);
+      assert.deepEqual(openExternalMock.mock.calls, [["zed://ssh/maestro/home/god/src/x.ts"]]);
     }).pipe(Effect.provide(ElectronShell.layer)),
   );
 

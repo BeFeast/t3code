@@ -801,3 +801,33 @@ export const resolveWindowsEnvironment = Effect.fn("shell.resolveWindowsEnvironm
     ? { ...baselinePatch, ...profiledPatch }
     : baselinePatch;
 });
+
+/**
+ * Opens a URL through the desktop's own handler, bypassing Electron's opener.
+ *
+ * On a portal-backed Linux desktop `shell.openExternal` goes through
+ * `org.freedesktop.portal.OpenURI`, which quietly declines schemes it does not
+ * consider web-safe and still resolves successfully -- the caller sees success
+ * and nothing launches. Verified on GNOME/Wayland with a `zed://` handler that
+ * `xdg-open` invokes without complaint.
+ *
+ * Resolves true only once the child has actually spawned. argv is an array and
+ * no shell is involved, so the URL is never interpreted as a command.
+ */
+export function openUrlWithDesktopHandler(
+  url: string,
+  spawnFn: typeof NodeChildProcess.spawn = NodeChildProcess.spawn,
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    try {
+      const child = spawnFn("xdg-open", [url], { detached: true, stdio: "ignore" });
+      child.once("error", () => resolve(false));
+      child.once("spawn", () => {
+        child.unref();
+        resolve(true);
+      });
+    } catch {
+      resolve(false);
+    }
+  });
+}

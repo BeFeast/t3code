@@ -4,6 +4,7 @@ import {
   remoteSchemeForEditor,
   type SystemSettingsPane,
 } from "@t3tools/contracts";
+import { openUrlWithDesktopHandler } from "@t3tools/shared/shell";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -66,12 +67,21 @@ export const make = ElectronShell.of({
     Option.match(parseSafeExternalUrl(rawUrl), {
       onNone: () => Effect.succeed(false),
       onSome: (externalUrl) =>
-        Effect.promise(() =>
-          Electron.shell.openExternal(externalUrl).then(
+        Effect.promise(async () => {
+          // Web URLs keep Electron's opener: it respects the user's browser
+          // choice and the portal passes http(s) through. Editor deep links are
+          // what the portal silently drops, so they go to the desktop handler
+          // first. No platform check: where that handler does not exist the
+          // spawn fails immediately and Electron still gets its turn.
+          const isWebUrl = SAFE_WEB_PROTOCOLS.has(new URL(externalUrl).protocol);
+          if (!isWebUrl && (await openUrlWithDesktopHandler(externalUrl))) {
+            return true;
+          }
+          return Electron.shell.openExternal(externalUrl).then(
             () => true,
             () => false,
-          ),
-        ),
+          );
+        }),
     }),
   openSystemSettings: (pane) =>
     Effect.promise(() =>
