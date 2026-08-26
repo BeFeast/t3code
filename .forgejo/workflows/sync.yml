@@ -14,6 +14,14 @@
 # hard-fails on it under persist-credentials: false — every sync 2026-08-14..18
 # died inside checkout before the sync script ran. A plain fetch never runs
 # submodule commands. Same gotcha documented in build.yml.
+# DO NOT delete upstream's .github/workflows/ from this fork. Forgejo resolves a
+# single workflow directory, first match wins (.forgejo > .gitea > .github), so
+# .forgejo/workflows/ already shadows them completely and they never run here.
+# Deleting them "for clarity" is what made this job fail 12 of 14 nights in
+# August 2026: upstream touched .github/workflows/ on 8 of those days, and every
+# such commit becomes an unavoidable modify/delete conflict against our deletion,
+# which aborts the rebase and stops `main` advancing. Restored 2026-08-26.
+
 name: sync
 
 on:
