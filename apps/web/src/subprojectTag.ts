@@ -59,6 +59,37 @@ export function parseLeadingTag(title: string): { tag: string; rest: string } | 
  * `knownNames` is spelled as the sub-projects are (`ok-gobot`), and comes from
  * the workspace itself, so it needs no separate config to stay current.
  */
+/**
+ * The title with a leading occurrence of `name` removed, or null when the name
+ * does not open the title.
+ *
+ * "ok-gobot Project Activation" tagged `ok-gobot` would otherwise render the
+ * word twice -- once as the chip, once as the first word of the text. Matching
+ * is done on the normalized forms, so "OK GoBot: retry" is stripped too, but
+ * the raw prefix is what gets cut so the remaining text keeps its own spelling.
+ */
+function stripLeadingName(title: string, name: string): string | null {
+  const needle = normalizeTagToken(name);
+  if (needle.length === 0) return null;
+  let seen = "";
+  for (let index = 0; index < title.length; index += 1) {
+    seen += normalizeTagToken(title[index] ?? "");
+    if (seen.length > needle.length) return null;
+    if (!needle.startsWith(seen)) return null;
+    if (seen === needle) {
+      // The name has to END here, not merely start the word: "hedroomless" is
+      // not a hedroom thread, and stripping it would leave "less design notes".
+      const next = title[index + 1];
+      if (next !== undefined && normalizeTagToken(next).length > 0) return null;
+      // Drop the separator the name was written with -- ": ", " - ", " " --
+      // but never the first character of the next word.
+      const rest = title.slice(index + 1).replace(/^[\s:\u2014\u2013_/|,.-]+/, "");
+      return rest.length > 0 ? rest : null;
+    }
+  }
+  return null;
+}
+
 export function resolveSubprojectTag(
   title: string,
   knownNames: ReadonlyArray<string>,
@@ -87,7 +118,10 @@ export function resolveSubprojectTag(
       bestLength = needle.length;
     }
   }
-  return best === null ? null : { label: best, title, source: "name" };
+  if (best === null) return null;
+  // A name that opens the title is the same statement the chip already makes.
+  const withoutLeadingName = stripLeadingName(title, best);
+  return { label: best, title: withoutLeadingName ?? title, source: "name" };
 }
 
 /**

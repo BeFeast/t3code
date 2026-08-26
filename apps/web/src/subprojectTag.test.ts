@@ -80,6 +80,45 @@ describe("resolveSubprojectTag", () => {
     });
   });
 
+  it("does not print the name twice when it opens the title", () => {
+    // Straight from the sidebar: the chip said ok-gobot and so did the text.
+    expect(resolveSubprojectTag("ok-gobot Project Activation", DEV_AREAS)).toEqual({
+      label: "ok-gobot",
+      title: "Project Activation",
+      source: "name",
+    });
+    expect(resolveSubprojectTag("Hedroom iOS App V1", DEV_AREAS)).toEqual({
+      label: "hedroom",
+      title: "iOS App V1",
+      source: "name",
+    });
+  });
+
+  it("strips the separator the name was written with, not the next word", () => {
+    expect(resolveSubprojectTag("OK GoBot: retry policy", DEV_AREAS)).toMatchObject({
+      label: "ok-gobot",
+      title: "retry policy",
+    });
+    expect(resolveSubprojectTag("hedroom — PDF export", DEV_AREAS)).toMatchObject({
+      label: "hedroom",
+      title: "PDF export",
+    });
+  });
+
+  it("keeps the title when stripping would leave nothing", () => {
+    expect(resolveSubprojectTag("Hedroom", DEV_AREAS)).toMatchObject({
+      label: "hedroom",
+      title: "Hedroom",
+    });
+  });
+
+  it("does not strip a name that merely starts a longer word", () => {
+    expect(resolveSubprojectTag("hedroomless design notes", DEV_AREAS)).toMatchObject({
+      label: "hedroom",
+      title: "hedroomless design notes",
+    });
+  });
+
   it("keeps the whole title beside the chip when the name is embedded mid-sentence", () => {
     expect(resolveSubprojectTag("Interview Hedroom Open Issues", DEV_AREAS)).toEqual({
       label: "hedroom",
