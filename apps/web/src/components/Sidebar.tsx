@@ -218,6 +218,7 @@ import { resolveSnoozePresets, snoozeWakeLabel, type SnoozePreset } from "./Side
 import { ProjectFavicon, type ProjectFaviconProject } from "./ProjectFavicon";
 import { ThreadSearchMatchExcerpt } from "./ThreadSearchMatch";
 import { makeWorkspaceFileDropHandlers } from "./chat/workspaceFileDrop";
+import { SubprojectTaggedTitle } from "./SubprojectTaggedTitle";
 import { ProviderInstanceIcon } from "./chat/ProviderInstanceIcon";
 import { getTriggerDisplayModelLabel } from "./chat/providerIconUtils";
 import {
@@ -1550,7 +1551,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
         isRegeneratingTitle && "opacity-55",
       )}
     >
-      {thread.title}
+      <SubprojectTaggedTitle
+        title={thread.title}
+        environmentId={thread.environmentId}
+        workspaceRoot={props.project?.workspaceRoot ?? null}
+      />
     </span>
   );
   const accessibleTitle = isRenaming ? null : <span className="sr-only">{thread.title}</span>;
