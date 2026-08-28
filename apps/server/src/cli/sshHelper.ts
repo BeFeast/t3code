@@ -87,7 +87,7 @@ const waitReady = Command.make("wait-ready", {
   ),
 );
 
-/** Prints `<pid> <port>` for a live default-home server, or exits 1. */
+/** Prints the default-home server port, even during a supervisor restart, or exits 1. */
 const runtimePort = Command.make("runtime-port", {
   runtimeFile: Argument.String("runtime-file"),
 }).pipe(
@@ -111,8 +111,7 @@ const runtimePort = Command.make("runtime-port", {
           process.exitCode = 1;
           return;
         }
-        process.kill(pid, 0);
-        process.stdout.write(`${pid} ${port}`);
+        process.stdout.write(String(port));
       } catch {
         process.exitCode = 1;
       }

@@ -298,9 +298,20 @@ describe("ssh tunnel scripts", () => {
       'DEFAULT_RUNTIME_FILE="$DEFAULT_SERVER_HOME/userdata/server-runtime.json"',
     );
     assert.include(launch, "resolve_default_runtime_port()");
-    assert.include(launch, 'DEFAULT_RUNTIME_INFO="$(resolve_default_runtime_port');
+    assert.include(launch, 'DEFAULT_REMOTE_PORT="$(resolve_default_runtime_port');
     assert.include(launch, "if (!Number.isInteger(pid) || pid <= 0 || !Number.isInteger(port))");
-    assert.include(launch, 'PID_TO_STOP="${REMOTE_PID:-$DEFAULT_RUNTIME_PID}"');
+    // Discovery must not require a live pid: a supervisor-restarting external
+    // server has a dead pid in server-runtime.json but the same port.
+    assert.notInclude(launch, "process.kill(pid, 0)");
+    // The two external reuse gates wait out a supervisor restart (20 s); the
+    // managed-reuse gate keeps upstream's 2 s and the managed spawn its own
+    // 60 s budget.
+    assert.equal(launch.split('wait_ready "20000"').length - 1, 2);
+    assert.equal(launch.split('wait_ready "2000"').length - 1, 1);
+    // The takeover branch may only ever kill the managed pid it recorded
+    // itself — never the external server's own pid from server-runtime.json.
+    assert.include(launch, 'PID_TO_STOP="$REMOTE_PID"');
+    assert.notInclude(launch, "$DEFAULT_RUNTIME_PID");
     assert.include(launch, 'REMOTE_PORT="$DEFAULT_REMOTE_PORT"');
     assert.include(launch, 'rm -f "$PID_FILE"');
     assert.include(launch, "printf 'external\\n' >\"$MANAGED_FILE\"");
@@ -310,7 +321,7 @@ describe("ssh tunnel scripts", () => {
       launch.indexOf("printf 'external\\n' >\"$MANAGED_FILE\""),
     );
     assert.isBelow(
-      launch.indexOf('DEFAULT_RUNTIME_INFO="$(resolve_default_runtime_port'),
+      launch.indexOf('DEFAULT_REMOTE_PORT="$(resolve_default_runtime_port'),
       launch.indexOf('elif [ -n "$REMOTE_PID" ]'),
     );
   });
@@ -692,6 +703,160 @@ describe("ssh tunnel scripts", () => {
         );
       }),
   );
+
+  it.effect("waits out a briefly unready external server instead of relaunching", () => {
+    // Reconnect while the external server's supervisor is restarting it: the
+    // tunnel process is alive, the HTTP probe fails for a few seconds, then
+    // recovers. The reuse check must wait it out, not replace the tunnel.
+    let mode: "ready" | "down" = "ready";
+    let failedProbes = 0;
+    const flakyHttpClient = HttpClient.make((request) =>
+      Effect.sync(() => {
+        if (mode === "down") {
+          failedProbes += 1;
+          if (failedProbes >= 49) {
+            mode = "ready";
+          }
+          return HttpClientResponse.fromWeb(request, new Response("", { status: 503 }));
+        }
+        return HttpClientResponse.fromWeb(request, new Response("", { status: 200 }));
+      }),
+    );
+    const spawnedCommands: Array<ReadonlyArray<string>> = [];
+    let tunnelKillCount = 0;
+    const spawner = ChildProcessSpawner.make((command) =>
+      Effect.sync(() => {
+        const args = commandArgs(command);
+        spawnedCommands.push(args);
+        if (args.includes("-N")) {
+          return makeRunningProcess(() => {
+            tunnelKillCount += 1;
+          });
+        }
+        if (args.includes("sh") && args.includes("--")) {
+          return makeSuccessfulProcess('{"remotePort":23010,"serverKind":"external"}\n');
+        }
+        return makeSuccessfulProcess('{"stopped":true}\n');
+      }),
+    );
+    const layer = Layer.mergeAll(
+      NodeServices.layer,
+      Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      Layer.succeed(HttpClient.HttpClient, flakyHttpClient),
+      Layer.succeed(NetService.NetService, testNetService),
+      SshPasswordPrompt.disabledLayer,
+      SshEnvironmentManager.layer({ resolveCliRunner: Effect.succeed(ARCHIVE) }),
+      TestClock.layer(),
+    );
+    const target = {
+      alias: "devbox",
+      hostname: "devbox.example.com",
+      username: "julius",
+      port: 2222,
+    } as const;
+
+    return Effect.gen(function* () {
+      const manager = yield* SshEnvironmentManager;
+
+      yield* manager.ensureEnvironment(target);
+      mode = "down";
+
+      const fiber = yield* Effect.forkChild(manager.ensureEnvironment(target));
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust(Duration.seconds(10));
+      const second = yield* Fiber.join(fiber);
+
+      assert.equal(second.httpBaseUrl, "http://127.0.0.1:41773/");
+      assert.equal(tunnelKillCount, 0);
+      assert.equal(spawnedCommands.filter((args) => args.includes("-N")).length, 1);
+    }).pipe(Effect.provide(layer), Effect.scoped);
+  });
+
+  it.effect("replaces the tunnel promptly when its process has exited", () => {
+    // A dead tunnel process must lose the readiness race immediately instead
+    // of holding the reconnect hostage for the full reuse budget.
+    let mode: "ready" | "down" = "ready";
+    let firstTunnelExited = false;
+    let tunnelSpawns = 0;
+    const gatedHttpClient = HttpClient.make((request) =>
+      Effect.sync(() =>
+        HttpClientResponse.fromWeb(
+          request,
+          new Response("", { status: mode === "ready" ? 200 : 503 }),
+        ),
+      ),
+    );
+    const spawner = ChildProcessSpawner.make((command) =>
+      Effect.sync(() => {
+        const args = commandArgs(command);
+        if (args.includes("-N")) {
+          tunnelSpawns += 1;
+          if (tunnelSpawns > 1) {
+            // The replacement tunnel comes up against a healthy server.
+            mode = "ready";
+            return makeRunningProcess(() => {});
+          }
+          return ChildProcessSpawner.makeHandle({
+            pid: ChildProcessSpawner.ProcessId(123),
+            stdout: Stream.empty,
+            stderr: Stream.empty,
+            all: Stream.empty,
+            exitCode: Effect.suspend(() =>
+              firstTunnelExited
+                ? Effect.succeed(ChildProcessSpawner.ExitCode(255))
+                : (Effect.never as Effect.Effect<ChildProcessSpawner.ExitCode>),
+            ),
+            isRunning: Effect.suspend(() => Effect.succeed(!firstTunnelExited)),
+            kill: () =>
+              Effect.sync(() => {
+                firstTunnelExited = true;
+              }),
+            stdin: Sink.drain,
+            getInputFd: () => Sink.drain,
+            getOutputFd: () => Stream.empty,
+            unref: Effect.succeed(Effect.void),
+          });
+        }
+        if (args.includes("sh") && args.includes("--")) {
+          return makeSuccessfulProcess('{"remotePort":23010,"serverKind":"external"}\n');
+        }
+        return makeSuccessfulProcess('{"stopped":true}\n');
+      }),
+    );
+    const layer = Layer.mergeAll(
+      NodeServices.layer,
+      Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      Layer.succeed(HttpClient.HttpClient, gatedHttpClient),
+      Layer.succeed(NetService.NetService, testNetService),
+      SshPasswordPrompt.disabledLayer,
+      SshEnvironmentManager.layer({ resolveCliRunner: Effect.succeed(ARCHIVE) }),
+      TestClock.layer(),
+    );
+    const target = {
+      alias: "devbox",
+      hostname: "devbox.example.com",
+      username: "julius",
+      port: 2222,
+    } as const;
+
+    return Effect.gen(function* () {
+      const manager = yield* SshEnvironmentManager;
+
+      yield* manager.ensureEnvironment(target);
+
+      // The tunnel process dies and the old local port stops answering.
+      firstTunnelExited = true;
+      mode = "down";
+
+      const fiber = yield* Effect.forkChild(manager.ensureEnvironment(target));
+      yield* Effect.yieldNow;
+      // Far below the reuse budget: the exit must short-circuit the probe.
+      yield* TestClock.adjust(Duration.seconds(3));
+      yield* Fiber.join(fiber);
+
+      assert.equal(tunnelSpawns, 2);
+    }).pipe(Effect.provide(layer), Effect.scoped);
+  });
 });
 
 // The archive runner is generated shell; string assertions cannot prove the

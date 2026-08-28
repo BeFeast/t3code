@@ -68,6 +68,14 @@ const REMOTE_ARCHIVE_DOWNLOAD_SECONDS = 240;
 const REMOTE_ARCHIVE_LOCK_WAIT_SECONDS = 360;
 const REMOTE_ARCHIVE_LAUNCH_TIMEOUT_MS = 900_000;
 const REMOTE_REUSE_READY_TIMEOUT_MS = 2_000;
+// oklabs: an external server under an init supervisor needs time to come back
+// after a crash (systemd: RestartSec + node boot is ~16 s on the reference
+// host). A 2 s probe meant any blip of the external server dropped the desktop
+// into spawning its own managed server on the shared base-dir. The two external
+// gates in the launch script and the desktop-side reconnect check get the same
+// patience as a cold tunnel (SSH_READY_TIMEOUT_MS); the managed-reuse gate
+// keeps upstream's REMOTE_REUSE_READY_TIMEOUT_MS.
+const REMOTE_EXTERNAL_READY_TIMEOUT_MS = 20_000;
 
 export interface RemoteT3RunnerOptions {
   /**
@@ -623,8 +631,7 @@ try {
   if (origin.protocol !== "http:" || !["127.0.0.1", "localhost"].includes(origin.hostname)) {
     process.exit(1);
   }
-  process.kill(pid, 0);
-  process.stdout.write(\`\${pid} \${port}\`);
+  process.stdout.write(String(port));
 } catch {
   process.exit(1);
 }
@@ -633,18 +640,15 @@ NODE
 REMOTE_PID="$(cat "$PID_FILE" 2>/dev/null || true)"
 REMOTE_PORT="$(cat "$PORT_FILE" 2>/dev/null || true)"
 REMOTE_MANAGED="$(cat "$MANAGED_FILE" 2>/dev/null || true)"
-DEFAULT_RUNTIME_INFO="$(resolve_default_runtime_port 2>/dev/null || true)"
-DEFAULT_RUNTIME_PID=""
-DEFAULT_REMOTE_PORT=""
-if [ -n "$DEFAULT_RUNTIME_INFO" ]; then
-  DEFAULT_RUNTIME_PID="\${DEFAULT_RUNTIME_INFO%% *}"
-  DEFAULT_REMOTE_PORT="\${DEFAULT_RUNTIME_INFO#* }"
-fi
+# No pid liveness check here: a supervisor-managed external server that just
+# crashed has a dead pid in server-runtime.json but will answer on the same
+# port again shortly — liveness is the HTTP probe's job.
+DEFAULT_REMOTE_PORT="$(resolve_default_runtime_port 2>/dev/null || true)"
 if [ -n "$DEFAULT_REMOTE_PORT" ]; then
   REMOTE_PORT="$DEFAULT_REMOTE_PORT"
-  if wait_ready "@@T3_REUSE_READY_TIMEOUT_MS@@"; then
+  if wait_ready "@@T3_EXTERNAL_READY_TIMEOUT_MS@@"; then
     if [ "$REMOTE_MANAGED" = "managed" ]; then
-      PID_TO_STOP="\${REMOTE_PID:-$DEFAULT_RUNTIME_PID}"
+      PID_TO_STOP="$REMOTE_PID"
       if [ -n "$PID_TO_STOP" ] && kill -0 "$PID_TO_STOP" 2>/dev/null; then
         kill "$PID_TO_STOP" 2>/dev/null || true
         wait_for_pid_exit "$PID_TO_STOP"
@@ -668,7 +672,7 @@ if [ -n "$DEFAULT_REMOTE_PORT" ]; then
   fi
 fi
 if [ "$REMOTE_MANAGED" = "external" ]; then
-  if [ -z "$REMOTE_PORT" ] || ! wait_ready "@@T3_REUSE_READY_TIMEOUT_MS@@"; then
+  if [ -z "$REMOTE_PORT" ] || ! wait_ready "@@T3_EXTERNAL_READY_TIMEOUT_MS@@"; then
     REMOTE_PID=""
     REMOTE_PORT=""
     REMOTE_MANAGED=""
@@ -838,6 +842,7 @@ export function buildRemoteLaunchScript(input?: RemoteT3RunnerOptions): string {
     T3_REMOTE_PORT_SCAN_WINDOW: String(REMOTE_PORT_SCAN_WINDOW),
     T3_READY_TIMEOUT_MS: String(REMOTE_READY_TIMEOUT_MS),
     T3_REUSE_READY_TIMEOUT_MS: String(REMOTE_REUSE_READY_TIMEOUT_MS),
+    T3_EXTERNAL_READY_TIMEOUT_MS: String(REMOTE_EXTERNAL_READY_TIMEOUT_MS),
     T3_READY_PROBE_TIMEOUT_MS: String(SSH_READY_PROBE_TIMEOUT_MS),
   });
 }
@@ -1615,8 +1620,29 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
         localPort: entry.localPort,
         remotePort: entry.remotePort,
       });
+      // Race the (long) readiness probe against the tunnel process itself so a
+      // genuinely dead tunnel still fails fast, while a restarting external
+      // server behind a live tunnel is waited out instead of being replaced.
       const readinessExit = yield* Effect.exit(
-        waitForHttpReady({ baseUrl: entry.httpBaseUrl, timeoutMs: 2_000 }),
+        Effect.raceFirst(
+          waitForHttpReady({
+            baseUrl: entry.httpBaseUrl,
+            timeoutMs: REMOTE_EXTERNAL_READY_TIMEOUT_MS,
+          }),
+          entry.process.exitCode.pipe(
+            Effect.map(Number),
+            Effect.flatMap((exitCode) =>
+              Effect.fail(
+                new SshCommandError({
+                  command: ["ssh"],
+                  exitCode,
+                  stderr: "",
+                  message: `SSH tunnel for ${resolvedTarget.alias} exited while checking readiness (exit ${exitCode}).`,
+                }),
+              ),
+            ),
+          ),
+        ),
       );
       if (Exit.isSuccess(readinessExit)) {
         yield* Effect.logDebug("ssh.environment.tunnel.reused", {
