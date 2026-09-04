@@ -58,7 +58,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends \
             nodejs ca-certificates curl git jq xz-utils python3 python3-yaml \
-            build-essential pkg-config file \
+            build-essential pkg-config libsecret-1-dev file \
             fakeroot squashfs-tools imagemagick \
             libfuse2t64
           command -v node
