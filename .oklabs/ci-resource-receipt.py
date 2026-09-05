@@ -7,7 +7,7 @@ from pathlib import Path
 import platform
 import subprocess
 
-COUNTERS = ("memory.current", "memory.peak", "memory.events", "memory.stat", "cpu.stat", "cpu.max", "io.stat", "pids.current", "pids.max")
+COUNTERS = ("memory.current", "memory.peak", "memory.events", "memory.stat", "memory.max", "memory.swap.max", "memory.pressure", "io.pressure", "cpu.stat", "cpu.max", "io.stat", "pids.current", "pids.max")
 
 
 def read_cgroup(root):
@@ -38,6 +38,7 @@ def receipt():
         "phase_times": {"unavailable": "use Forgejo action_task_step timestamps"},
         "run_id": os.environ.get("GITHUB_RUN_ID"),
         "run_number": os.environ.get("GITHUB_RUN_NUMBER"),
+        "runner_name": os.environ.get("RUNNER_NAME", "")[:128] or None,
         "kernel": platform.release(),
         "machine": platform.machine(),
         "source_sha": command_value(["git", "rev-parse", "HEAD"]),
