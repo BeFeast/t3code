@@ -206,6 +206,12 @@ jobs:
           PUBLISH_SERVER: "false"
         run: bash /tmp/t3-ci-helpers/publish-server.sh
 
+      - name: Upload server tarball artifact
+        uses: https://code.forgejo.org/forgejo/upload-artifact@v4
+        with:
+          name: t3-server-tarball
+          path: build/t3-*.tgz
+
       - name: Check publication eligibility
         run: python3 /tmp/t3-ci-helpers/release-pair.py eligible
 
@@ -251,12 +257,6 @@ jobs:
         env:
           OKLABS_BOT_PAT: ${{ secrets.OKLABS_BOT_PAT }}
         run: python3 /tmp/t3-ci-helpers/release-pair.py publish
-
-      - name: Upload server tarball artifact
-        uses: https://code.forgejo.org/forgejo/upload-artifact@v4
-        with:
-          name: t3-server-tarball
-          path: build/t3-*.tgz
 
       # Quality gate that REPORTS but never BLOCKS (decision 2026-08-22).
       # Until now this workflow ran no lint, no typecheck and no tests at all,

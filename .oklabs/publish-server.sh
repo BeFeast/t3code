@@ -100,15 +100,6 @@ case "$CODE" in
   *) echo "registry upload HTTP $CODE" >&2; exit 1 ;;
 esac
 
-# prove visibility (no pipe into jq -e from curl in a way that can SIGPIPE:
-# write the body first)
-curl -fsS -m 30 -o "$STAGE/pkgs.json" \
-  "https://git.oklabs.uk/api/v1/packages/BeFeast?type=generic&q=t3-server"
-python3 - "$STAGE/pkgs.json" "$VERSION" <<'PY'
-import json, sys
-pkgs = json.load(open(sys.argv[1]))
-ver = sys.argv[2]
-if not any(p.get("name") == "t3-server" and p.get("version") == ver for p in pkgs):
-    raise SystemExit(f"uploaded {ver} but it is not visible in the package index")
-print(f"visible: t3-server {ver}")
-PY
+# Verify the exact uploaded file rather than the first page of the package index.
+curl -fsSI -m 30 "$REGISTRY/${VERSION}/t3-${VERSION}.tgz" >/dev/null
+echo "visible: t3-server $VERSION"
