@@ -121,20 +121,25 @@ jobs:
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           "$HOME/.cargo/bin/rustup" target add x86_64-unknown-linux-gnu
 
+      - name: Resolve the pnpm store on the job workspace filesystem
+        id: pnpm_store
+        run: |
+          printf 'path=%s\n' "$(pnpm store path)" >> "$GITHUB_OUTPUT"
+
       - name: Cache pnpm / cargo / electron (best effort)
         uses: https://code.forgejo.org/actions/cache@v4
         continue-on-error: true
         with:
           path: |
-            ~/.local/share/pnpm/store
+            ${{ steps.pnpm_store.outputs.path }}
             ~/.cargo/registry
             ~/.cargo/git
             ~/.cache/electron
             ~/.cache/electron-builder
             native/resource-monitor/target
-          key: t3code-build-linux-x64-ubuntu26.04-node${{ env.NODE_VERSION }}-pnpm${{ env.PNPM_VERSION }}-rust${{ env.RUST_VERSION }}-release-${{ hashFiles('pnpm-lock.yaml', 'native/resource-monitor/Cargo.lock') }}
+          key: t3code-build-v2-linux-x64-ubuntu26.04-node${{ env.NODE_VERSION }}-pnpm${{ env.PNPM_VERSION }}-rust${{ env.RUST_VERSION }}-release-${{ hashFiles('pnpm-lock.yaml', 'native/resource-monitor/Cargo.lock') }}
           restore-keys: |
-            t3code-build-linux-x64-ubuntu26.04-node${{ env.NODE_VERSION }}-pnpm${{ env.PNPM_VERSION }}-rust${{ env.RUST_VERSION }}-release-
+            t3code-build-v2-linux-x64-ubuntu26.04-node${{ env.NODE_VERSION }}-pnpm${{ env.PNPM_VERSION }}-rust${{ env.RUST_VERSION }}-release-
 
       - name: Version stamp (committer date — monotonic, rebuild-idempotent)
         run: |
