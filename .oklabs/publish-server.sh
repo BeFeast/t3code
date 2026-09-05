@@ -4,14 +4,14 @@
 # (do not use `npm publish` or `npm pack` — see the t3code-oklabs-build runbook).
 #
 # Env:
-#   OKLABS_BOT_PAT  (required)
+#   PUBLISH_SERVER  false = pack artifact only (default true)
+#   OKLABS_BOT_PAT  (required for publication)
 #   VERSION         (required) — must match the desktop stamp byte-for-byte
 #   REPO            (default: cwd)
 set -euo pipefail
 
 REPO="${REPO:-$(pwd)}"
 VERSION="${VERSION:?VERSION is required}"
-TOKEN="${OKLABS_BOT_PAT:?OKLABS_BOT_PAT is required}"
 REGISTRY="https://git.oklabs.uk/api/packages/BeFeast/generic/t3-server"
 DIST="$REPO/apps/server/dist"
 RESOURCE_MONITOR="$REPO/native/resource-monitor/target/x86_64-unknown-linux-gnu/release/t3-resource-monitor"
@@ -84,6 +84,12 @@ done
 # Copy aside for the workflow artifact (VERSION may contain '+')
 mkdir -p "$REPO/build"
 cp -f "$TARBALL" "$REPO/build/t3-${VERSION}.tgz"
+
+if [[ "${PUBLISH_SERVER:-true}" == "false" ]]; then
+  echo "packed matching server artifact; publication disabled"
+  exit 0
+fi
+TOKEN="${OKLABS_BOT_PAT:?OKLABS_BOT_PAT is required}"
 
 CODE=$(curl -sS -o /dev/null -w '%{http_code}' -u "oklabs-bot:${TOKEN}" \
   --upload-file "$TARBALL" \
