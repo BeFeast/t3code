@@ -101,7 +101,7 @@ jobs:
           CANARY_SHA: ${{ inputs.canary_sha }}
         run: |
           mkdir -p /tmp/t3-ci-helpers
-          cp .oklabs/release-pair.py .oklabs/publish-server.sh /tmp/t3-ci-helpers/
+          cp .oklabs/release-pair.py .oklabs/publish-server.sh .oklabs/ci-resource-receipt.py /tmp/t3-ci-helpers/
           if [ "$CANARY" = true ]; then
             git fetch origin "$CANARY_SHA"
             git checkout --detach "$CANARY_SHA"
@@ -333,3 +333,23 @@ jobs:
             STATE="nothing was published"
           fi
           .oklabs/notify.sh urgent "t3code build FAILED — ${STATE}. ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_NUMBER}"
+
+      - name: Record job resource evidence
+        if: always()
+        run: |
+          if command -v python3 >/dev/null && [ -f /tmp/t3-ci-helpers/ci-resource-receipt.py ]; then
+            python3 /tmp/t3-ci-helpers/ci-resource-receipt.py
+          else
+            mkdir -p build
+            printf '%s\n' '{"schema_version":1,"unavailable":"reviewed helper or Python missing before setup completed"}' \
+              >build/ci-resource-receipt.json
+          fi
+
+      - name: Upload job resource evidence
+        if: always()
+        uses: https://code.forgejo.org/forgejo/upload-artifact@v4
+        with:
+          name: t3-ci-resource-receipt
+          path: build/ci-resource-receipt.json
+          if-no-files-found: warn
+          retention-days: 14
