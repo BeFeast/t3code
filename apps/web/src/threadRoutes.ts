@@ -1,4 +1,5 @@
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import type { EnvironmentShellStatus } from "@t3tools/client-runtime/state/shell";
 import type { EnvironmentId, ScopedThreadRef, ThreadId } from "@t3tools/contracts";
 import type { DraftId } from "./composerDraftStore";
 
@@ -22,6 +23,8 @@ export type ThreadRouteRenderState = "loading" | "ready" | "missing";
 
 export function resolveThreadRouteRenderState(input: {
   bootstrapComplete: boolean;
+  shellStatus: EnvironmentShellStatus;
+  shellSynchronizationFailed: boolean;
   serverThreadShellExists: boolean;
   serverThreadDetailExists: boolean;
   serverThreadDetailDeleted: boolean;
@@ -35,6 +38,14 @@ export function resolveThreadRouteRenderState(input: {
   }
   if (input.serverThreadDetailDeleted) {
     return "missing";
+  }
+  // Cached snapshots can render known threads, but cannot establish absence of
+  // a thread created since the last visit. Keep its deep link through catch-up
+  // -- unless synchronization has failed: the shell falls back to "cached" on
+  // a stream error, and a dead server would otherwise leave this route blank
+  // forever with nothing to show. Give the link up so the error surfaces.
+  if (input.shellStatus !== "live" && !input.shellSynchronizationFailed) {
+    return "loading";
   }
   return input.serverThreadShellExists ? "loading" : "missing";
 }

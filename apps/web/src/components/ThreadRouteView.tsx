@@ -110,6 +110,8 @@ export function ThreadRouteView({ target }: { target: ThreadRouteTarget }) {
   );
   const renderState = resolveThreadRouteRenderState({
     bootstrapComplete,
+    shellStatus: shell.data?.status ?? "empty",
+    shellSynchronizationFailed: shell.data?.error._tag === "Some",
     serverThreadShellExists: serverThreadShell !== null,
     serverThreadDetailExists: serverThreadDetail !== null,
     serverThreadDetailDeleted: serverThreadStatus === "deleted",

@@ -98,6 +98,8 @@ describe("threadRoutes", () => {
     expect(
       resolveThreadRouteRenderState({
         bootstrapComplete: true,
+        shellSynchronizationFailed: false,
+        shellStatus: "live",
         serverThreadShellExists: true,
         serverThreadDetailExists: false,
         serverThreadDetailDeleted: false,
@@ -110,6 +112,8 @@ describe("threadRoutes", () => {
     expect(
       resolveThreadRouteRenderState({
         bootstrapComplete: true,
+        shellSynchronizationFailed: false,
+        shellStatus: "live",
         serverThreadShellExists: true,
         serverThreadDetailExists: true,
         serverThreadDetailDeleted: false,
@@ -119,6 +123,8 @@ describe("threadRoutes", () => {
     expect(
       resolveThreadRouteRenderState({
         bootstrapComplete: true,
+        shellSynchronizationFailed: false,
+        shellStatus: "live",
         serverThreadShellExists: false,
         serverThreadDetailExists: false,
         serverThreadDetailDeleted: false,
@@ -131,6 +137,8 @@ describe("threadRoutes", () => {
     expect(
       resolveThreadRouteRenderState({
         bootstrapComplete: false,
+        shellSynchronizationFailed: false,
+        shellStatus: "empty",
         serverThreadShellExists: false,
         serverThreadDetailExists: false,
         serverThreadDetailDeleted: false,
@@ -140,6 +148,8 @@ describe("threadRoutes", () => {
     expect(
       resolveThreadRouteRenderState({
         bootstrapComplete: true,
+        shellSynchronizationFailed: false,
+        shellStatus: "live",
         serverThreadShellExists: false,
         serverThreadDetailExists: false,
         serverThreadDetailDeleted: false,
@@ -152,11 +162,105 @@ describe("threadRoutes", () => {
     expect(
       resolveThreadRouteRenderState({
         bootstrapComplete: true,
+        shellSynchronizationFailed: false,
+        shellStatus: "live",
         serverThreadShellExists: true,
         serverThreadDetailExists: false,
         serverThreadDetailDeleted: true,
         draftThreadExists: false,
       }),
     ).toBe("missing");
+  });
+  it("keeps a new thread route while a stale shell catches up", () => {
+    const missingFromCache = {
+      bootstrapComplete: true,
+      shellSynchronizationFailed: false,
+      serverThreadShellExists: false,
+      serverThreadDetailExists: false,
+      serverThreadDetailDeleted: false,
+      draftThreadExists: false,
+    };
+    const states = [
+      resolveThreadRouteRenderState({ ...missingFromCache, shellStatus: "cached" }),
+      resolveThreadRouteRenderState({ ...missingFromCache, shellStatus: "synchronizing" }),
+      resolveThreadRouteRenderState({
+        ...missingFromCache,
+        shellStatus: "live",
+        serverThreadShellExists: true,
+      }),
+      resolveThreadRouteRenderState({
+        ...missingFromCache,
+        shellStatus: "live",
+        serverThreadShellExists: true,
+        serverThreadDetailExists: true,
+      }),
+    ];
+    expect(states).toEqual(["loading", "loading", "loading", "ready"]);
+    expect(states).not.toContain("missing");
+    expect(resolveThreadRouteRenderState({ ...missingFromCache, shellStatus: "live" })).toBe(
+      "missing",
+    );
+  });
+
+  it("renders cached details and local drafts without waiting for a live shell", () => {
+    const cached = {
+      bootstrapComplete: true,
+      shellSynchronizationFailed: false,
+      shellStatus: "cached" as const,
+      serverThreadShellExists: false,
+      serverThreadDetailExists: false,
+      serverThreadDetailDeleted: false,
+      draftThreadExists: false,
+    };
+    expect(resolveThreadRouteRenderState({ ...cached, serverThreadDetailExists: true })).toBe(
+      "ready",
+    );
+    expect(resolveThreadRouteRenderState({ ...cached, draftThreadExists: true })).toBe("ready");
+    expect(resolveThreadRouteRenderState({ ...cached, serverThreadShellExists: true })).toBe(
+      "loading",
+    );
+  });
+  it("gives the deep link up once synchronization failed, so the error can surface", () => {
+    // A dead server with a cached snapshot: the shell falls back to "cached"
+    // and records an error. Waiting for "live" here would be a blank screen
+    // with no end; the upstream "missing" path at least redirects.
+    const unreachable = {
+      bootstrapComplete: true,
+      shellSynchronizationFailed: true,
+      shellStatus: "cached" as const,
+      serverThreadShellExists: false,
+      serverThreadDetailExists: false,
+      serverThreadDetailDeleted: false,
+      draftThreadExists: false,
+    };
+    expect(resolveThreadRouteRenderState(unreachable)).toBe("missing");
+    // A thread the cache does know keeps rendering from the cached shell.
+    expect(resolveThreadRouteRenderState({ ...unreachable, serverThreadShellExists: true })).toBe(
+      "loading",
+    );
+    // Once the stream is back (status "live" clears the error) the usual rules apply.
+    expect(
+      resolveThreadRouteRenderState({
+        ...unreachable,
+        shellSynchronizationFailed: false,
+        shellStatus: "synchronizing",
+      }),
+    ).toBe("loading");
+  });
+
+  it("keeps explicit deletion authoritative while the shell is cached or synchronizing", () => {
+    for (const shellStatus of ["cached", "synchronizing"] as const) {
+      expect(
+        resolveThreadRouteRenderState({
+          bootstrapComplete: true,
+          shellSynchronizationFailed: false,
+          shellStatus,
+          serverThreadShellExists: true,
+          serverThreadDetailExists: false,
+          serverThreadDetailDeleted: true,
+          draftThreadExists: false,
+        }),
+      ).toBe("missing");
+    }
   });
 });
