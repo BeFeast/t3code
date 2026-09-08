@@ -21,6 +21,18 @@
 # August 2026: upstream touched .github/workflows/ on 8 of those days, and every
 # such commit becomes an unavoidable modify/delete conflict against our deletion,
 # which aborts the rebase and stops `main` advancing. Restored 2026-08-26.
+#
+# 2026-09-08: the scheduled run had succeeded 2 nights out of 15. Two changes:
+#  1. Conflicts are classified, not just reported. .oklabs/rebase-autoresolve.py
+#     resolves the two mechanical kinds (both sides inserted/deleted whole
+#     lines next to each other; named-import specifier merges) and refuses
+#     everything else. The editor.ts conflict that stalled 2026-09-06..08 was
+#     mechanical; the DesktopWindow refactor the same morning was not.
+#  2. `main` is pushed only after a full `pnpm typecheck` of the rebased tree.
+#     A clean rebase proves nothing: upstream renamed Schema.TaggedErrorClass
+#     on 2026-09-08 and our fork-only files kept the old name without a single
+#     conflict. A typecheck failure stops the sync exactly like a real conflict.
+# Both outcomes reach Telegram with the offending patch and files in the text.
 
 name: sync
 
@@ -28,16 +40,41 @@ on:
   schedule:
     - cron: "07 6 * * *" # after handy/tolaria/ferdium morning wave
   workflow_dispatch:
+    inputs:
+      force:
+        description: Rebase and typecheck even when upstream has not moved
+        type: boolean
+        required: false
+        default: false
 
 env:
   UPSTREAM_URL: https://github.com/pingdotgg/t3code.git
   UPSTREAM_BRANCH: main
+  DEBIAN_FRONTEND: noninteractive
+  HUSKY: "0"
+  CI: "true"
+  NODE_VERSION: "24.13.1"
+  PNPM_VERSION: "11.10.0"
+  NODE_OPTIONS: "--max-old-space-size=4096"
+  COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+  FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force == true }}
 
 jobs:
   sync:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Same lane and image as build.yml: the typecheck needs the same toolchain
+    # and the same memory headroom; the baldr docker executor has neither pinned.
+    runs-on: ci-interactive
+    timeout-minutes: 45
+    container:
+      image: docker.io/library/ubuntu:26.04@sha256:678c6550cc43645e08669028bc177f50be4e7c5b8cca677067b1914d4afc7a03
     steps:
+      - name: Prep container
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl git jq xz-utils python3 \
+            build-essential pkg-config libsecret-1-dev
+
       - name: Fetch fork (full history, no checkout action)
         run: |
           git init -b main .
@@ -47,13 +84,17 @@ jobs:
           git checkout -B main origin/main
 
       - name: Sync upstream branch and rebase main
-        env:
-          OKLABS_BOT_PAT: ${{ secrets.OKLABS_BOT_PAT }}
         run: |
           git config user.name  'OK Labs'
           git config user.email 'oleg@befeast.com'
           mkdir -p /tmp/no-hooks && git config core.hooksPath /tmp/no-hooks
-          export HUSKY=0 CI=true
+          # diff3 must live in the repo config: `git -c` only reaches the first
+          # stop, `git rebase --continue` writes later conflicts without the base
+          # section and the resolver (rightly) refuses to guess without it.
+          git config merge.conflictStyle diff3
+          # The helpers travel in a late oklabs commit; mid-rebase the tree is
+          # upstream + the first N patches and may not contain them yet.
+          cp .oklabs/rebase-autoresolve.py .oklabs/notify.sh /tmp/
 
           git fetch origin '+refs/heads/upstream:refs/remotes/origin/upstream' || true
           OLD=$(git rev-parse origin/upstream 2>/dev/null || echo none)
@@ -61,17 +102,115 @@ jobs:
           git fetch github "$UPSTREAM_BRANCH" --tags
           NEW=$(git rev-parse FETCH_HEAD)
           echo "upstream: $OLD -> $NEW"
-          [ "$OLD" = "$NEW" ] && { echo "no upstream changes"; exit 0; }
+          if [ "$OLD" = "$NEW" ] && [ "$FORCE" != true ]; then
+            echo "no upstream changes"
+            echo "SYNC_SKIP=1" >> "$GITHUB_ENV"
+            exit 0
+          fi
 
-          git push --force "https://x-access-token:${GITHUB_TOKEN}@git.oklabs.uk/${GITHUB_REPOSITORY}.git" "$NEW:refs/heads/upstream"
-          git push --force "https://x-access-token:${GITHUB_TOKEN}@git.oklabs.uk/${GITHUB_REPOSITORY}.git" --tags || true
+          if [ "$OLD" != "$NEW" ]; then
+            git push --force "https://x-access-token:${GITHUB_TOKEN}@git.oklabs.uk/${GITHUB_REPOSITORY}.git" "$NEW:refs/heads/upstream"
+            git push --force "https://x-access-token:${GITHUB_TOKEN}@git.oklabs.uk/${GITHUB_REPOSITORY}.git" --tags || true
+          fi
 
           MAIN_OLD=$(git rev-parse origin/main)
+          echo "MAIN_OLD=$MAIN_OLD" >> "$GITHUB_ENV"
           git checkout -B main origin/main
-          git rebase "$NEW" main
 
+          set +e
+          git rebase "$NEW" main >/tmp/rebase.log 2>&1; rc=$?
+          while [ "$rc" -ne 0 ]; do
+            if ! python3 /tmp/rebase-autoresolve.py --summary /tmp/autoresolved.jsonl 2>/tmp/autoresolve-err.txt; then
+              cat /tmp/autoresolve-err.txt
+              {
+                echo "REAL rebase conflict at $(git log -1 --format='%h %s' REBASE_HEAD 2>/dev/null || echo '?')"
+                git diff --name-only --diff-filter=U | sed 's/^/  /'
+                tail -n 20 /tmp/rebase.log
+              } > /tmp/sync-alert.txt
+              git rebase --abort
+              exit 1
+            fi
+            if git diff --cached --quiet; then
+              GIT_EDITOR=true git rebase --skip >>/tmp/rebase.log 2>&1; rc=$?
+            else
+              GIT_EDITOR=true git rebase --continue >>/tmp/rebase.log 2>&1; rc=$?
+            fi
+          done
+          set -e
+          echo "rebased: $MAIN_OLD -> $(git rev-parse HEAD) ($(git rev-list --count "$NEW"..HEAD) patches on $NEW)"
+          [ -f /tmp/autoresolved.jsonl ] && { echo "auto-resolved:"; cat /tmp/autoresolved.jsonl; } || true
+
+      - name: Install Node + pnpm
+        if: env.SYNC_SKIP != '1'
+        run: |
+          curl -fsSL --retry 3 -o /tmp/node.tar.xz \
+            "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz"
+          tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1
+          node --version
+          corepack enable
+          corepack prepare "pnpm@${PNPM_VERSION}" --activate
+          pnpm --version
+          printf 'path=%s\n' "$(pnpm store path)" >> "$GITHUB_OUTPUT"
+        id: pnpm_store
+
+      - name: Cache pnpm store (best effort)
+        if: env.SYNC_SKIP != '1'
+        uses: https://code.forgejo.org/actions/cache@v4
+        continue-on-error: true
+        with:
+          path: ${{ steps.pnpm_store.outputs.path }}
+          key: sync-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            sync-pnpm-
+
+      # The gate. A rebase with no conflict markers is not a rebase that
+      # compiles; only this step proves the patch stack still applies.
+      - name: Typecheck the rebased tree
+        if: env.SYNC_SKIP != '1'
+        run: |
+          set +e
+          pnpm install --frozen-lockfile >/tmp/install.log 2>&1 || {
+            tail -n 40 /tmp/install.log
+            echo "pnpm install FAILED on the rebased tree (lockfile drift or registry outage)" > /tmp/sync-alert.txt
+            exit 1
+          }
+          pnpm run typecheck >/tmp/typecheck.log 2>&1 || {
+            grep -E "error TS[0-9]+" /tmp/typecheck.log | grep -v "TS377" | head -n 40
+            {
+              echo "typecheck FAILED after a clean rebase — upstream API change hitting fork-only code (runbook gotcha 16). main NOT pushed."
+              grep -E "error TS[0-9]+" /tmp/typecheck.log | grep -v "TS377" | sed -E 's/\(.*//' | sort | uniq -c | sort -rn | head -n 10
+            } > /tmp/sync-alert.txt
+            exit 1
+          }
+          echo "typecheck passed"
+
+      - name: Push main
+        if: env.SYNC_SKIP != '1'
+        env:
+          OKLABS_BOT_PAT: ${{ secrets.OKLABS_BOT_PAT }}
+        run: |
           git push --force-with-lease=refs/heads/main:"$MAIN_OLD" \
             "https://oklabs-bot:${OKLABS_BOT_PAT}@git.oklabs.uk/${GITHUB_REPOSITORY}.git" main
+
+      # Trust needs receipts: say what was resolved without a human, so a bad
+      # mechanical merge that still typechecks can be traced to its morning.
+      - name: Report auto-resolved conflicts
+        if: env.SYNC_SKIP != '1'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          [ -f /tmp/autoresolved.jsonl ] || { echo "nothing auto-resolved"; exit 0; }
+          LIST=$(python3 -c '
+          import json, sys
+          for line in open("/tmp/autoresolved.jsonl"):
+              e = json.loads(line)
+              print(f"- {e[\"file\"]} <- {\",\".join(e[\"rules\"])} ({e[\"patch\"][:60]})")
+          ')
+          N=$(wc -l < /tmp/autoresolved.jsonl)
+          /tmp/notify.sh low "t3code sync auto-resolved ${N} trivial conflict(s); typecheck passed, main pushed. Review if anything looks off:
+          ${LIST}
+          ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_NUMBER}"
 
       # Telegram is the channel that actually reaches a human; the ntfy topic
       # has no subscriber and is kept only because the oklabs-forks template
@@ -86,12 +225,17 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          MSG="t3code sync FAILED — fork main stops advancing until this is resolved. Most often a rebase conflict (resolve in a worktree, runbook gotcha 10); check the log for which step died. ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_NUMBER}"
+          DETAIL=$(cat /tmp/sync-alert.txt 2>/dev/null || echo "check the log for which step died (fetch, toolchain, or an infrastructure failure — not a conflict)")
+          MSG="t3code sync FAILED — fork main stops advancing until this is resolved.
+          ${DETAIL}
+          Resolve in a worktree (runbook gotcha 10, rebase playbook): ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_NUMBER}"
           # The fetch step is what puts .oklabs/notify.sh on disk, and it is
           # itself a step that can fail — that is exactly how 2026-08-14..18
           # played out. Fall back to a bare Telegram send so the one failure
           # mode that leaves no helper still reaches a human.
-          if [ -x .oklabs/notify.sh ]; then
+          if [ -x /tmp/notify.sh ]; then
+            /tmp/notify.sh urgent "$MSG"
+          elif [ -x .oklabs/notify.sh ]; then
             .oklabs/notify.sh urgent "$MSG"
           elif [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
             code=$(curl -s -m 20 --connect-timeout 5 -o /dev/null -w '%{http_code}' \
