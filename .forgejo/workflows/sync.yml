@@ -83,6 +83,11 @@ jobs:
             '+refs/heads/*:refs/remotes/origin/*' --tags
           git checkout -B main origin/main
 
+      - name: Test sync helpers
+        run: |
+          python3 -m unittest discover -s .oklabs -p test_sync_skip.py -v
+          python3 -m unittest discover -s .oklabs -p test_rebase_autoresolve.py -v
+
       - name: Sync upstream branch and rebase main
         run: |
           git config user.name  'OK Labs'
@@ -102,8 +107,11 @@ jobs:
           git fetch github "$UPSTREAM_BRANCH" --tags
           NEW=$(git rev-parse FETCH_HEAD)
           echo "upstream: $OLD -> $NEW"
-          if [ "$OLD" = "$NEW" ] && [ "$FORCE" != true ]; then
-            echo "no upstream changes"
+          # The mirror advances before rebase/typecheck, including on failure.
+          # An unchanged mirror only means done when main contains upstream.
+          if [ "$OLD" = "$NEW" ] && [ "$FORCE" != true ] &&
+             git merge-base --is-ancestor "$NEW" origin/main; then
+            echo "main already contains upstream"
             echo "SYNC_SKIP=1" >> "$GITHUB_ENV"
             exit 0
           fi
