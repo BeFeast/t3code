@@ -178,9 +178,15 @@ jobs:
           TEST_MODE=0
           if [ -n "${REPAIR_TEST_ONTO:-}" ]; then
             TEST_MODE=1
-            git cat-file -e "${REPAIR_TEST_ONTO}^{commit}" 2>/dev/null || git fetch github "$REPAIR_TEST_ONTO"
+            # A replay sha must be reachable from some fork ref (upstream, a tag,
+            # or a backup/* branch — the manual repairs keep the previous main
+            # as backup/sync-before-<date>); a rewritten main drops old heads.
+            git cat-file -e "${REPAIR_TEST_ONTO}^{commit}" 2>/dev/null || git fetch github "$REPAIR_TEST_ONTO" ||
+              { echo "repair_test_onto ${REPAIR_TEST_ONTO} is not reachable from the fork or GitHub" > /tmp/sync-alert.txt; exit 1; }
             ONTO=$(git rev-parse "${REPAIR_TEST_ONTO}^{commit}")
             if [ -n "${REPAIR_TEST_STACK:-}" ]; then
+              git cat-file -e "${REPAIR_TEST_STACK}^{commit}" 2>/dev/null ||
+                { echo "repair_test_stack ${REPAIR_TEST_STACK} is not reachable from any fork ref; push it as backup/<name> first" > /tmp/sync-alert.txt; exit 1; }
               STACK=$(git rev-parse "${REPAIR_TEST_STACK}^{commit}")
             fi
             echo "TEST MODE: stack $STACK onto $ONTO (push disabled)"
