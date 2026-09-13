@@ -454,7 +454,9 @@ jobs:
           --- repair agent transcript (tail) ---
           $(grep -vE '^\s*$' /tmp/repair-transcript.txt | tail -n 25 | cut -c1-300)"
           fi
-          MSG="t3code sync FAILED — fork main stops advancing until this is resolved.
+          PREFIX=""
+          [ -z "${REPAIR_TEST_ONTO:-}" ] || PREFIX="[TEST MODE replay — main untouched] "
+          MSG="${PREFIX}t3code sync FAILED — fork main stops advancing until this is resolved.
           ${DETAIL}
           Resolve in a worktree (runbook gotcha 10, rebase playbook): ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_NUMBER}${TAIL}"
           # The fetch step is what puts .oklabs/notify.sh on disk, and it is

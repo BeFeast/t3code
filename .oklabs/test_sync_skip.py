@@ -43,9 +43,11 @@ class SyncSkipTests(unittest.TestCase):
         self.git("commit", "-m", content)
         return self.git("rev-parse", "HEAD")
 
-    def run_gate(self, *, force="false", mirror=None):
+    def run_gate(self, *, force="false", mirror=None, test_onto=""):
         # Extract the production block, not a copy of its condition. Stop at
         # the mirror push: this fixture must never contact a real remote.
+        # REPAIR_TEST_ONTO is pinned explicitly: a workflow_dispatch in test
+        # mode exports it to every step, including this test run.
         workflow = WORKFLOW.read_text()
         start = workflow.index('          echo "upstream: $OLD -> $NEW"')
         end = workflow.index('          if [ "$OLD" != "$NEW" ]; then', start)
@@ -56,7 +58,8 @@ class SyncSkipTests(unittest.TestCase):
             ["bash", "-e", "-c", script], cwd=self.repo, check=True,
             capture_output=True, text=True,
             env={**os.environ, "OLD": mirror or self.upstream,
-                 "NEW": self.upstream, "FORCE": force, "GITHUB_ENV": str(env_file)},
+                 "NEW": self.upstream, "FORCE": force, "GITHUB_ENV": str(env_file),
+                 "REPAIR_TEST_ONTO": test_onto},
         )
         return "SYNC_SKIP=1" in env_file.read_text(), "SYNC_CONTINUE" in result.stdout
 
@@ -80,6 +83,14 @@ class SyncSkipTests(unittest.TestCase):
     def test_force_rechecks_converged_main(self):
         self.git("update-ref", "refs/remotes/origin/main", self.upstream)
         self.assertEqual(self.run_gate(force="true"), (False, True))
+
+    def test_repair_test_mode_never_skips(self):
+        # Sync v3: a replay of a past night must rebase even when main already
+        # contains the live upstream (the replay targets a different sha).
+        self.git("checkout", "-b", "repaired", self.upstream)
+        repaired = self.commit("reapplied fork")
+        self.git("update-ref", "refs/remotes/origin/main", repaired)
+        self.assertEqual(self.run_gate(test_onto=self.base), (False, True))
 
     def test_changed_mirror_still_advances(self):
         self.git("update-ref", "refs/remotes/origin/main", self.upstream)
