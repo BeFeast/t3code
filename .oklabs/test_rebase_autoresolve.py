@@ -118,5 +118,73 @@ class Parsing(unittest.TestCase):
         self.assertEqual(out, 'head\na\nb\nmiddle\nimport { x, y } from "m";\ntail')
 
 
+class IndexStages(unittest.TestCase):
+    """main() must refuse conflicts that have no three-way hunk to classify."""
+
+    def _repo(self):
+        import os
+        import subprocess
+        import tempfile
+
+        root = tempfile.mkdtemp(prefix="autoresolve-")
+        env = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@example.com",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@example.com",
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "HOME": root,
+        }
+
+        def run(*args, check=True):
+            return subprocess.run(["git", "-c", "merge.conflictStyle=diff3", *args], cwd=root, env=env, check=check, capture_output=True, text=True)
+
+        run("init", "-q", "-b", "main")
+        pathlib.Path(root, "keep.txt").write_text("keep\n")
+        run("add", "keep.txt")
+        run("commit", "-q", "-m", "base")
+        return root, env, run
+
+    def _autoresolve(self, root, env):
+        import subprocess
+
+        return subprocess.run(["python3", str(HERE / "rebase-autoresolve.py")], cwd=root, env=env, capture_output=True, text=True)
+
+    def test_add_add_is_real(self):
+        root, env, run = self._repo()
+        run("checkout", "-q", "-b", "patch")
+        pathlib.Path(root, "new.ts").write_text("export const ours = 1;\n")
+        run("add", "new.ts")
+        run("commit", "-q", "-m", "patch adds new.ts")
+        run("checkout", "-q", "main")
+        pathlib.Path(root, "new.ts").write_text("export const upstream = 2;\n")
+        run("add", "new.ts")
+        run("commit", "-q", "-m", "upstream adds new.ts")
+        run("checkout", "-q", "patch")
+        self.assertNotEqual(run("rebase", "main", check=False).returncode, 0)
+        result = self._autoresolve(root, env)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("both sides added", result.stderr)
+        self.assertIn("<<<<<<<", pathlib.Path(root, "new.ts").read_text())
+        # still unmerged: nothing was staged as a resolution
+        self.assertEqual(run("diff", "--name-only", "--diff-filter=U").stdout.strip(), "new.ts")
+
+    def test_modify_delete_is_real(self):
+        root, env, run = self._repo()
+        run("checkout", "-q", "-b", "patch")
+        pathlib.Path(root, "keep.txt").write_text("keep\npatched\n")
+        run("commit", "-q", "-am", "patch edits keep.txt")
+        run("checkout", "-q", "main")
+        run("rm", "-q", "keep.txt")
+        run("commit", "-q", "-m", "upstream deletes keep.txt")
+        run("checkout", "-q", "patch")
+        self.assertNotEqual(run("rebase", "main", check=False).returncode, 0)
+        result = self._autoresolve(root, env)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("deleted by HEAD", result.stderr)
+        self.assertEqual(run("diff", "--name-only", "--diff-filter=U").stdout.strip(), "keep.txt")
+
+
 if __name__ == "__main__":
     unittest.main()

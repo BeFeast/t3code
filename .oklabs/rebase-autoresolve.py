@@ -261,6 +261,27 @@ def git(*args: str) -> str:
     return subprocess.run(["git", *args], check=True, capture_output=True, text=True).stdout
 
 
+def unmerged_stages() -> dict[str, set[int]]:
+    """Map each unmerged path to its index stages (1 = base, 2 = HEAD, 3 = patch)."""
+    stages: dict[str, set[int]] = {}
+    for entry in git("ls-files", "-u", "-z").split("\0"):
+        if not entry:
+            continue
+        meta, path = entry.split("\t", 1)
+        stages.setdefault(path, set()).add(int(meta.split()[2]))
+    return stages
+
+
+def describe_stages(stages: set[int]) -> str:
+    if stages == {2, 3}:
+        return "both sides added this file (no common base to merge against)"
+    if stages == {1, 2}:
+        return "deleted by the patch, modified by HEAD"
+    if stages == {1, 3}:
+        return "deleted by HEAD, modified by the patch"
+    return f"unmerged index stages {sorted(stages)}"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--summary", help="append a JSON line per resolved file")
@@ -270,6 +291,7 @@ def main() -> int:
     if not conflicted:
         print("autoresolve: no conflicted files", file=sys.stderr)
         return 1
+    stages = unmerged_stages()
     patch = ""
     try:
         patch = git("log", "-1", "--format=%h %s", "REBASE_HEAD").strip()
@@ -279,6 +301,13 @@ def main() -> int:
     resolved: list[dict[str, object]] = []
     failures: list[str] = []
     for path in conflicted:
+        # Only a three-way hunk can be classified. An add/add conflict has no base
+        # section, so ``compose`` would splice two unrelated files into one (run 240:
+        # our ForgejoSourceControlProvider.ts vs upstream's); a modify/delete has no
+        # markers at all and would be staged as-is, silently undoing the deletion.
+        if stages.get(path, set()) != {1, 2, 3}:
+            failures.append(f"{path}: {describe_stages(stages.get(path, set()))}")
+            continue
         try:
             with open(path, encoding="utf-8") as handle:
                 text = handle.read()
