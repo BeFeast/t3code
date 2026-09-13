@@ -418,8 +418,9 @@ jobs:
         run: |
           RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_NUMBER}"
           if [ "${REPAIRED:-0}" = 1 ]; then
-            git range-diff "$OLD_BASE..$MAIN_OLD" "$ONTO..HEAD" > /tmp/range-diff.txt 2>&1 || true
-            echo "range-diff: $(python3 /tmp/helpers/rebase-repair-lib.py range-diff-summary /tmp/range-diff.txt)"
+            git range-diff --no-color "$OLD_BASE..$MAIN_OLD" "$ONTO..HEAD" > /tmp/range-diff.txt 2>&1 || true
+            echo "range-diff: $(python3 /tmp/helpers/rebase-repair-lib.py range-diff-summary /tmp/range-diff.txt) ($(wc -l < /tmp/range-diff.txt) lines)"
+            grep -E '^ *([0-9]+|-): ' /tmp/range-diff.txt | cut -c1-140 | head -n 80
             MSG=$(python3 /tmp/helpers/rebase-repair-lib.py receipt \
               --summary /tmp/repair-summary.jsonl --autoresolved /tmp/autoresolved.jsonl \
               --tests /tmp/gate-results.txt --range-diff /tmp/range-diff.txt \

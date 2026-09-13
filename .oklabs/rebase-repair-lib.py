@@ -277,7 +277,7 @@ def tests_summary(log: str) -> str:
 
 def range_diff_summary(text: str) -> dict[str, int]:
     counts = {"=": 0, "!": 0, "<": 0, ">": 0}
-    for symbol in RANGE_DIFF_RE.findall(text):
+    for symbol in RANGE_DIFF_RE.findall(ANSI_RE.sub("", text)):
         counts[symbol] += 1
     return counts
 

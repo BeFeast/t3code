@@ -196,6 +196,8 @@ class GateParsing(unittest.TestCase):
             "    @@ hunk noise = not a row\n"
         )
         self.assertEqual(rr.range_diff_summary(text), {"=": 1, "!": 1, "<": 1, ">": 1})
+        coloured = "\x1b[33m 1:  19769d79b =  1:  fea616b8c oklabs: one\x1b[m\n\x1b[33m10:  c11da2e81 = 10:  b6e4d9c62 ci: ten\x1b[m\n"
+        self.assertEqual(rr.range_diff_summary(coloured), {"=": 2, "!": 0, "<": 0, ">": 0})
         self.assertEqual(rr.format_range_diff({"=": 47, "!": 7, "<": 2, ">": 0}), "47 unchanged, 7 modified, 2 dropped, 0 added")
 
 
