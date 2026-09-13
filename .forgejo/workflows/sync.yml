@@ -437,7 +437,8 @@ jobs:
               --tests /tmp/gate-results.txt --range-diff /tmp/range-diff.txt --patches "${OLD_N}:${NEW_N}" \
               --run-url "$RUN_URL" --pushed "${PUSHED:-0}" --test-mode "${TEST_MODE:-0}")
             echo "$MSG"
-            /tmp/notify.sh default "$MSG"
+            PRIO=default; [ "${TEST_MODE:-0}" = 1 ] && PRIO=low   # replays never page Oleg
+            /tmp/notify.sh "$PRIO" "$MSG"
             exit 0
           fi
           set -e
@@ -482,10 +483,11 @@ jobs:
           # itself a step that can fail — that is exactly how 2026-08-14..18
           # played out. Fall back to a bare Telegram send so the one failure
           # mode that leaves no helper still reaches a human.
+          PRIO=urgent; [ -z "${REPAIR_TEST_ONTO:-}" ] || PRIO=low   # a failed replay is a low-priority note, not a page
           if [ -x /tmp/notify.sh ]; then
-            /tmp/notify.sh urgent "$MSG"
+            /tmp/notify.sh "$PRIO" "$MSG"
           elif [ -x .oklabs/notify.sh ]; then
-            .oklabs/notify.sh urgent "$MSG"
+            .oklabs/notify.sh "$PRIO" "$MSG"
           elif [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
             code=$(curl -s -m 20 --connect-timeout 5 -o /dev/null -w '%{http_code}' \
               -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
