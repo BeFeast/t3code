@@ -33,6 +33,22 @@
 #     on 2026-09-08 and our fork-only files kept the old name without a single
 #     conflict. A typecheck failure stops the sync exactly like a real conflict.
 # Both outcomes reach Telegram with the offending patch and files in the text.
+#
+# 2026-09-13 (Sync v3): a REAL conflict or a red typecheck no longer ends the
+# night with a task for a human — 9 manual repair sessions in 19 days. Both
+# now go to .oklabs/rebase-repair.sh, which drives Codex CLI (`codex exec`,
+# model gpt-6-astra through CLIProxyAPI on maestro, repo secret
+# CLIPROXY_API_KEY) through the fork's rebase playbook: one patch at a time,
+# both sides when additive, adapt to refactors, drop a patch upstream has
+# superseded, never add features. The agent only edits the working tree; the
+# driver checks for leftover markers, stages, continues, and is bounded by a
+# wall clock and an iteration cap. `main` is pushed only when the whole gate
+# is green — install, typecheck, lint, and the test suites of every package
+# the agent touched — and the Telegram message is a receipt (patches, files,
+# agent calls, tokens, test counts, range-diff), not an assignment. If the
+# agent gives up or the gate stays red, the old alert fires with the tail of
+# the agent transcript. `repair_test_onto` (+ `repair_test_stack`) replays a
+# known conflict through the lane with the push disabled.
 
 name: sync
 
@@ -46,6 +62,16 @@ on:
         type: boolean
         required: false
         default: false
+      repair_test_onto:
+        description: "TEST MODE: rebase the stack onto this upstream sha instead of the live tip; upstream mirror untouched, main never pushed"
+        type: string
+        required: false
+        default: ""
+      repair_test_stack:
+        description: "TEST MODE: stack tip to rebase (default origin/main); a historical main sha reproduces a past night"
+        type: string
+        required: false
+        default: ""
 
 env:
   UPSTREAM_URL: https://github.com/pingdotgg/t3code.git
@@ -58,13 +84,25 @@ env:
   NODE_OPTIONS: "--max-old-space-size=4096"
   COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
   FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force == true }}
+  REPAIR_TEST_ONTO: ${{ github.event_name == 'workflow_dispatch' && inputs.repair_test_onto || '' }}
+  REPAIR_TEST_STACK: ${{ github.event_name == 'workflow_dispatch' && inputs.repair_test_stack || '' }}
+  # Repair lane: Codex CLI pinned, talking to CLIProxyAPI on maestro over the LAN.
+  CODEX_VERSION: "0.154.0"
+  CODEX_PREFIX: /opt/codex-cli
+  REPAIR_AGENT: codex
+  REPAIR_MODEL: gpt-6-astra
+  CLIPROXY_BASE_URL: http://10.10.0.23:23020/v1
+  REPAIR_BUDGET_SECONDS: "2700"
+  REPAIR_MAX_ITERATIONS: "8"
+  REPAIR_STATE_DIR: /tmp/rebase-repair
 
 jobs:
   sync:
     # Same lane and image as build.yml: the typecheck needs the same toolchain
     # and the same memory headroom; the baldr docker executor has neither pinned.
+    # 120 min: rebase + a 45-min repair budget + install/typecheck/lint/tests.
     runs-on: ci-interactive
-    timeout-minutes: 45
+    timeout-minutes: 120
     container:
       image: docker.io/library/ubuntu:26.04@sha256:678c6550cc43645e08669028bc177f50be4e7c5b8cca677067b1914d4afc7a03
     steps:
@@ -75,20 +113,26 @@ jobs:
             ca-certificates curl git jq xz-utils python3 \
             build-essential pkg-config libsecret-1-dev
 
+      # The working tree is the commit this workflow file came from
+      # (GITHUB_SHA: main on schedule, the dispatched branch otherwise), so the
+      # helper scripts and their tests are always the version that matches the
+      # workflow. The rebase step re-points `main` at the real stack below.
       - name: Fetch fork (full history, no checkout action)
         run: |
           git init -b main .
           git remote add origin "https://git.oklabs.uk/${GITHUB_REPOSITORY}.git"
           git fetch "https://x-access-token:${GITHUB_TOKEN}@git.oklabs.uk/${GITHUB_REPOSITORY}.git" \
             '+refs/heads/*:refs/remotes/origin/*' --tags
-          git checkout -B main origin/main
+          git checkout -q --detach "$GITHUB_SHA" 2>/dev/null || git checkout -B main origin/main
+          echo "helpers from $(git rev-parse --short HEAD) ($(git log -1 --format=%s | cut -c1-70))"
 
       - name: Test sync helpers
         run: |
           python3 -m unittest discover -s .oklabs -p test_sync_skip.py -v
           python3 -m unittest discover -s .oklabs -p test_rebase_autoresolve.py -v
+          python3 -m unittest discover -s .oklabs -p test_rebase_repair.py -v
 
-      - name: Sync upstream branch and rebase main
+      - name: Sync upstream branch
         run: |
           git config user.name  'OK Labs'
           git config user.email 'oleg@befeast.com'
@@ -99,7 +143,11 @@ jobs:
           git config merge.conflictStyle diff3
           # The helpers travel in a late oklabs commit; mid-rebase the tree is
           # upstream + the first N patches and may not contain them yet.
-          cp .oklabs/rebase-autoresolve.py .oklabs/notify.sh /tmp/
+          mkdir -p /tmp/helpers
+          cp .oklabs/rebase-autoresolve.py .oklabs/notify.sh \
+             .oklabs/rebase-repair.sh .oklabs/rebase-repair-lib.py \
+             .oklabs/rebase-repair-prompt.md .oklabs/rebase-repair-schema.json /tmp/helpers/
+          cp /tmp/helpers/rebase-autoresolve.py /tmp/helpers/notify.sh /tmp/
 
           git fetch origin '+refs/heads/upstream:refs/remotes/origin/upstream' || true
           OLD=$(git rev-parse origin/upstream 2>/dev/null || echo none)
@@ -109,7 +157,8 @@ jobs:
           echo "upstream: $OLD -> $NEW"
           # The mirror advances before rebase/typecheck, including on failure.
           # An unchanged mirror only means done when main contains upstream.
-          if [ "$OLD" = "$NEW" ] && [ "$FORCE" != true ] &&
+          # Test mode never skips: it rebases a chosen stack onto a chosen sha.
+          if [ "$OLD" = "$NEW" ] && [ "$FORCE" != true ] && [ -z "${REPAIR_TEST_ONTO:-}" ] &&
              git merge-base --is-ancestor "$NEW" origin/main; then
             echo "main already contains upstream"
             echo "SYNC_SKIP=1" >> "$GITHUB_ENV"
@@ -121,33 +170,33 @@ jobs:
             git push --force "https://x-access-token:${GITHUB_TOKEN}@git.oklabs.uk/${GITHUB_REPOSITORY}.git" --tags || true
           fi
 
-          MAIN_OLD=$(git rev-parse origin/main)
-          echo "MAIN_OLD=$MAIN_OLD" >> "$GITHUB_ENV"
-          git checkout -B main origin/main
-
-          set +e
-          git rebase "$NEW" main >/tmp/rebase.log 2>&1; rc=$?
-          while [ "$rc" -ne 0 ]; do
-            if ! python3 /tmp/rebase-autoresolve.py --summary /tmp/autoresolved.jsonl 2>/tmp/autoresolve-err.txt; then
-              cat /tmp/autoresolve-err.txt
-              {
-                echo "REAL rebase conflict at $(git log -1 --format='%h %s' REBASE_HEAD 2>/dev/null || echo '?')"
-                git diff --name-only --diff-filter=U | sed 's/^/  /'
-                tail -n 20 /tmp/rebase.log
-              } > /tmp/sync-alert.txt
-              git rebase --abort
-              exit 1
+          # What gets rebased onto what. Normally: origin/main onto the live
+          # upstream tip. In test mode: the requested stack onto the requested
+          # sha, and nothing is pushed afterwards.
+          STACK=$(git rev-parse origin/main)
+          ONTO="$NEW"
+          TEST_MODE=0
+          if [ -n "${REPAIR_TEST_ONTO:-}" ]; then
+            TEST_MODE=1
+            git cat-file -e "${REPAIR_TEST_ONTO}^{commit}" 2>/dev/null || git fetch github "$REPAIR_TEST_ONTO"
+            ONTO=$(git rev-parse "${REPAIR_TEST_ONTO}^{commit}")
+            if [ -n "${REPAIR_TEST_STACK:-}" ]; then
+              STACK=$(git rev-parse "${REPAIR_TEST_STACK}^{commit}")
             fi
-            if git diff --cached --quiet; then
-              GIT_EDITOR=true git rebase --skip >>/tmp/rebase.log 2>&1; rc=$?
-            else
-              GIT_EDITOR=true git rebase --continue >>/tmp/rebase.log 2>&1; rc=$?
-            fi
-          done
-          set -e
-          echo "rebased: $MAIN_OLD -> $(git rev-parse HEAD) ($(git rev-list --count "$NEW"..HEAD) patches on $NEW)"
-          [ -f /tmp/autoresolved.jsonl ] && { echo "auto-resolved:"; cat /tmp/autoresolved.jsonl; } || true
+            echo "TEST MODE: stack $STACK onto $ONTO (push disabled)"
+          fi
+          OLD_BASE=$(git merge-base "$STACK" "$ONTO")
+          {
+            echo "MAIN_OLD=$STACK"
+            echo "ONTO=$ONTO"
+            echo "OLD_BASE=$OLD_BASE"
+            echo "TEST_MODE=$TEST_MODE"
+          } >> "$GITHUB_ENV"
+          echo "stack: $STACK (base $OLD_BASE, $(git rev-list --count "$OLD_BASE".."$STACK") patches) -> onto $ONTO"
 
+      # Toolchain before the rebase: the repair agent (a native binary shipped
+      # by the @openai/codex npm package) needs node/npm to install, and the
+      # gate needs pnpm. Skipped nights pay nothing.
       - name: Install Node + pnpm
         if: env.SYNC_SKIP != '1'
         run: |
@@ -171,10 +220,92 @@ jobs:
           restore-keys: |
             sync-pnpm-
 
-      # The gate. A rebase with no conflict markers is not a rebase that
-      # compiles; only this step proves the patch stack still applies.
-      - name: Typecheck the rebased tree
+      - name: Cache repair agent CLI (best effort)
         if: env.SYNC_SKIP != '1'
+        uses: https://code.forgejo.org/actions/cache@v4
+        continue-on-error: true
+        with:
+          path: ${{ env.CODEX_PREFIX }}
+          key: sync-codex-${{ env.CODEX_VERSION }}-linux-x64
+
+      - name: Install repair agent CLI
+        if: env.SYNC_SKIP != '1'
+        run: |
+          if [ ! -x "${CODEX_PREFIX}/bin/codex" ]; then
+            npm install -g --prefix "${CODEX_PREFIX}" "@openai/codex@${CODEX_VERSION}" >/tmp/codex-install.log 2>&1 || {
+              tail -n 20 /tmp/codex-install.log; echo "codex install FAILED — repair lane unavailable this run"; }
+          fi
+          echo "${CODEX_PREFIX}/bin" >> "$GITHUB_PATH"
+          "${CODEX_PREFIX}/bin/codex" --version || echo "codex missing"
+
+      - name: Rebase main (mechanical resolver, then the repair lane)
+        if: env.SYNC_SKIP != '1'
+        env:
+          CLIPROXY_API_KEY: ${{ secrets.CLIPROXY_API_KEY }}
+        run: |
+          git checkout -B main "$MAIN_OLD"
+          rm -rf "$REPAIR_STATE_DIR"; mkdir -p "$REPAIR_STATE_DIR"
+
+          set +e
+          git rebase "$ONTO" main >/tmp/rebase.log 2>&1; rc=$?
+          while [ "$rc" -ne 0 ]; do
+            if ! python3 /tmp/rebase-autoresolve.py --summary /tmp/autoresolved.jsonl 2>/tmp/autoresolve-err.txt; then
+              cat /tmp/autoresolve-err.txt
+              REAL_PATCH=$(git log -1 --format='%h %s' REBASE_HEAD 2>/dev/null || echo '?')
+              REAL_FILES=$(git diff --name-only --diff-filter=U | sed 's/^/  /')
+              if [ -z "${CLIPROXY_API_KEY:-}" ] || ! command -v codex >/dev/null 2>&1; then
+                {
+                  echo "REAL rebase conflict at ${REAL_PATCH} (repair lane unavailable: $([ -z "${CLIPROXY_API_KEY:-}" ] && echo 'no CLIPROXY_API_KEY secret' || echo 'codex CLI not installed'))"
+                  echo "$REAL_FILES"
+                  tail -n 20 /tmp/rebase.log
+                } > /tmp/sync-alert.txt
+                git rebase --abort
+                exit 1
+              fi
+              echo "REAL rebase conflict at ${REAL_PATCH} — handing over to the repair lane"
+              echo "$REAL_FILES"
+              cp /tmp/autoresolve-err.txt "$REPAIR_STATE_DIR/autoresolve-err.txt"
+              /tmp/helpers/rebase-repair.sh \
+                --old-base "$OLD_BASE" --new-base "$ONTO" \
+                --budget-seconds "$REPAIR_BUDGET_SECONDS" --max-iterations "$REPAIR_MAX_ITERATIONS" \
+                --transcript /tmp/repair-transcript.txt --summary /tmp/repair-summary.jsonl
+              rc=$?
+              # The lane's own mechanical resolves must reach the receipt too.
+              [ -f "$REPAIR_STATE_DIR/autoresolved.jsonl" ] && cat "$REPAIR_STATE_DIR/autoresolved.jsonl" >> /tmp/autoresolved.jsonl
+              if [ "$rc" -ne 0 ]; then
+                {
+                  echo "REAL rebase conflict at ${REAL_PATCH}; the repair lane could not finish: $(cat "$REPAIR_STATE_DIR/failure-reason.txt" 2>/dev/null || echo 'see transcript')"
+                  echo "$REAL_FILES"
+                  echo "last stop: $(git log -1 --format='%h %s' REBASE_HEAD 2>/dev/null || echo '?')"
+                  git diff --name-only --diff-filter=U | sed 's/^/  /'
+                } > /tmp/sync-alert.txt
+                git rebase --abort
+                exit 1
+              fi
+              echo "REPAIRED=1" >> "$GITHUB_ENV"
+              break
+            fi
+            if git diff --cached --quiet; then
+              GIT_EDITOR=true git rebase --skip >>/tmp/rebase.log 2>&1; rc=$?
+            else
+              GIT_EDITOR=true git rebase --continue >>/tmp/rebase.log 2>&1; rc=$?
+            fi
+          done
+          set -e
+          [ ! -d "$(git rev-parse --git-path rebase-merge)" ] || { echo "rebase still in progress after the loop" > /tmp/sync-alert.txt; git rebase --abort; exit 1; }
+          echo "rebased: $MAIN_OLD -> $(git rev-parse HEAD) ($(git rev-list --count "$ONTO"..HEAD) patches on $ONTO)"
+          [ -f /tmp/autoresolved.jsonl ] && { echo "auto-resolved:"; cat /tmp/autoresolved.jsonl; } || true
+          [ -f /tmp/repair-summary.jsonl ] && { echo "repair lane:"; cat /tmp/repair-summary.jsonl; } || true
+
+      # The gate. A rebase with no conflict markers is not a rebase that
+      # compiles; only this step proves the patch stack still applies. When
+      # typecheck fails after a clean rebase (upstream API rename hitting
+      # fork-only files, runbook gotcha 16) the repair lane gets one more go
+      # with the compiler output as its brief, then the gate is re-run in full.
+      - name: Typecheck the rebased tree (repair lane on failure)
+        if: env.SYNC_SKIP != '1'
+        env:
+          CLIPROXY_API_KEY: ${{ secrets.CLIPROXY_API_KEY }}
         run: |
           set +e
           pnpm install --frozen-lockfile >/tmp/install.log 2>&1 || {
@@ -182,32 +313,113 @@ jobs:
             echo "pnpm install FAILED on the rebased tree (lockfile drift or registry outage)" > /tmp/sync-alert.txt
             exit 1
           }
-          pnpm run typecheck >/tmp/typecheck.log 2>&1 || {
-            grep -E "error TS[0-9]+" /tmp/typecheck.log | grep -v "TS377" | head -n 40
+          : > /tmp/gate-results.txt
+          if pnpm run typecheck >/tmp/typecheck.log 2>&1; then
+            echo "typecheck passed"
+            printf 'typecheck\tok\n' >> /tmp/gate-results.txt
+            exit 0
+          fi
+          grep -E "error TS[0-9]+" /tmp/typecheck.log | grep -v "TS377" | head -n 40
+          if [ -z "${CLIPROXY_API_KEY:-}" ] || ! command -v codex >/dev/null 2>&1; then
             {
-              echo "typecheck FAILED after a clean rebase — upstream API change hitting fork-only code (runbook gotcha 16). main NOT pushed."
+              echo "typecheck FAILED after the rebase — upstream API change hitting fork-only code (runbook gotcha 16); repair lane unavailable. main NOT pushed."
+              grep -E "error TS[0-9]+" /tmp/typecheck.log | grep -v "TS377" | sed -E 's/\(.*//' | sort | uniq -c | sort -rn | head -n 10
+            } > /tmp/sync-alert.txt
+            exit 1
+          fi
+          echo "typecheck FAILED — handing the diagnostics to the repair lane"
+          mkdir -p "$REPAIR_STATE_DIR"
+          /tmp/helpers/rebase-repair.sh \
+            --typecheck-log /tmp/typecheck.log --verify-cmd "pnpm run typecheck" \
+            --old-base "$OLD_BASE" --new-base "$ONTO" \
+            --budget-seconds 1500 --max-iterations 2 \
+            --transcript /tmp/repair-transcript.txt --summary /tmp/repair-summary.jsonl || {
+            {
+              echo "typecheck FAILED after the rebase and the repair lane could not fix it: $(cat "$REPAIR_STATE_DIR/failure-reason.txt" 2>/dev/null || echo 'see transcript'). main NOT pushed."
               grep -E "error TS[0-9]+" /tmp/typecheck.log | grep -v "TS377" | sed -E 's/\(.*//' | sort | uniq -c | sort -rn | head -n 10
             } > /tmp/sync-alert.txt
             exit 1
           }
-          echo "typecheck passed"
+          echo "REPAIRED=1" >> "$GITHUB_ENV"
+          echo "typecheck passed after repair ($(git log -1 --format='%h %s'))"
+          printf 'typecheck\tok (after repair)\n' >> /tmp/gate-results.txt
+
+      # Only a night the agent touched pays for lint and tests: the packages
+      # whose files it edited or that stopped the rebase, sequentially (the
+      # runner OOMs on parallel suites), capped at the six with real suites.
+      - name: Lint and test what the repair lane touched
+        if: env.SYNC_SKIP != '1' && env.REPAIRED == '1'
+        run: |
+          set +e
+          if pnpm run lint >/tmp/lint.log 2>&1; then
+            echo "lint passed"; printf 'lint\tok\n' >> /tmp/gate-results.txt
+          else
+            tail -n 40 /tmp/lint.log
+            { echo "lint FAILED after the agent repair. main NOT pushed."; grep -E "^\s*[x✖]|error" /tmp/lint.log | head -n 15; } > /tmp/sync-alert.txt
+            exit 1
+          fi
+          python3 - <<'PY' > /tmp/touched-files.txt
+          import json
+          seen = []
+          for path in ("/tmp/repair-summary.jsonl", "/tmp/autoresolved.jsonl"):
+              try:
+                  for line in open(path):
+                      entry = json.loads(line)
+                      files = entry.get("files") or ([entry["file"]] if "file" in entry else [])
+                      seen.extend(f for f in files if f not in seen)
+              except FileNotFoundError:
+                  pass
+          print("\n".join(seen))
+          PY
+          echo "touched files:"; sed 's/^/  /' /tmp/touched-files.txt
+          python3 /tmp/helpers/rebase-repair-lib.py packages < /tmp/touched-files.txt > /tmp/test-packages.txt
+          [ -s /tmp/test-packages.txt ] || { echo "no package with a test suite was touched"; exit 0; }
+          while IFS=$'\t' read -r id dir; do
+            echo "== tests: $id ($dir)"
+            (cd "$dir" && pnpm run test --maxWorkers=2) >"/tmp/test-$id.log" 2>&1; rc=$?
+            SUMMARY=$(python3 /tmp/helpers/rebase-repair-lib.py tests-summary "/tmp/test-$id.log")
+            echo "   $id: rc=$rc, $SUMMARY"
+            if [ "$rc" -ne 0 ]; then
+              grep -E "FAIL|✗|×|Error:" "/tmp/test-$id.log" | head -n 20
+              printf '%s\tFAILED (%s)\n' "$id" "$SUMMARY" >> /tmp/gate-results.txt
+              { echo "tests FAILED in $id after the agent repair ($SUMMARY). main NOT pushed."; grep -E "FAIL|✗|×" "/tmp/test-$id.log" | head -n 10; } > /tmp/sync-alert.txt
+              exit 1
+            fi
+            printf '%s\t%s\n' "$id" "$SUMMARY" >> /tmp/gate-results.txt
+          done < /tmp/test-packages.txt
+          echo "all touched suites green"
 
       - name: Push main
-        if: env.SYNC_SKIP != '1'
+        if: env.SYNC_SKIP != '1' && env.TEST_MODE != '1'
         env:
           OKLABS_BOT_PAT: ${{ secrets.OKLABS_BOT_PAT }}
         run: |
           git push --force-with-lease=refs/heads/main:"$MAIN_OLD" \
             "https://oklabs-bot:${OKLABS_BOT_PAT}@git.oklabs.uk/${GITHUB_REPOSITORY}.git" main
+          echo "PUSHED=1" >> "$GITHUB_ENV"
 
       # Trust needs receipts: say what was resolved without a human, so a bad
       # mechanical merge that still typechecks can be traced to its morning.
-      - name: Report auto-resolved conflicts
+      # A night the repair lane worked gets the full receipt: patches, files,
+      # agent calls and tokens, test counts, and the range-diff of the stack.
+      - name: Report what was resolved without a human
         if: env.SYNC_SKIP != '1'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_NUMBER}"
+          if [ "${REPAIRED:-0}" = 1 ]; then
+            git range-diff "$OLD_BASE..$MAIN_OLD" "$ONTO..HEAD" > /tmp/range-diff.txt 2>&1 || true
+            echo "range-diff: $(python3 /tmp/helpers/rebase-repair-lib.py range-diff-summary /tmp/range-diff.txt)"
+            MSG=$(python3 /tmp/helpers/rebase-repair-lib.py receipt \
+              --summary /tmp/repair-summary.jsonl --autoresolved /tmp/autoresolved.jsonl \
+              --tests /tmp/gate-results.txt --range-diff /tmp/range-diff.txt \
+              --run-url "$RUN_URL" --pushed "${PUSHED:-0}" --test-mode "${TEST_MODE:-0}")
+            echo "$MSG"
+            /tmp/notify.sh default "$MSG"
+            exit 0
+          fi
           [ -f /tmp/autoresolved.jsonl ] || { echo "nothing auto-resolved"; exit 0; }
           LIST=$(python3 -c '
           import json, sys
@@ -216,9 +428,9 @@ jobs:
               print(f"- {e[\"file\"]} <- {\",\".join(e[\"rules\"])} ({e[\"patch\"][:60]})")
           ')
           N=$(wc -l < /tmp/autoresolved.jsonl)
-          /tmp/notify.sh low "t3code sync auto-resolved ${N} trivial conflict(s); typecheck passed, main pushed. Review if anything looks off:
+          /tmp/notify.sh low "t3code sync auto-resolved ${N} trivial conflict(s); typecheck passed, main $([ "${TEST_MODE:-0}" = 1 ] && echo 'NOT pushed (test mode)' || echo pushed). Review if anything looks off:
           ${LIST}
-          ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_NUMBER}"
+          ${RUN_URL}"
 
       # Telegram is the channel that actually reaches a human; the ntfy topic
       # has no subscriber and is kept only because the oklabs-forks template
@@ -234,9 +446,15 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           DETAIL=$(cat /tmp/sync-alert.txt 2>/dev/null || echo "check the log for which step died (fetch, toolchain, or an infrastructure failure — not a conflict)")
+          TAIL=""
+          if [ -s /tmp/repair-transcript.txt ]; then
+            TAIL="
+          --- repair agent transcript (tail) ---
+          $(grep -vE '^\s*$' /tmp/repair-transcript.txt | tail -n 25 | cut -c1-300)"
+          fi
           MSG="t3code sync FAILED — fork main stops advancing until this is resolved.
           ${DETAIL}
-          Resolve in a worktree (runbook gotcha 10, rebase playbook): ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_NUMBER}"
+          Resolve in a worktree (runbook gotcha 10, rebase playbook): ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_NUMBER}${TAIL}"
           # The fetch step is what puts .oklabs/notify.sh on disk, and it is
           # itself a step that can fail — that is exactly how 2026-08-14..18
           # played out. Fall back to a bare Telegram send so the one failure

@@ -1,0 +1,21 @@
+{
+  "type": "object",
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": ["RESOLVED", "SKIP", "GIVEUP"],
+      "description": "RESOLVED: conflicted files edited, no markers remain. SKIP: the whole patch is superseded by upstream and must be dropped. GIVEUP: a human is needed."
+    },
+    "reason": {
+      "type": "string",
+      "description": "One or two sentences: what was done, or why the patch is dropped / needs a human."
+    },
+    "files": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Repository paths edited during this stop."
+    }
+  },
+  "required": ["verdict", "reason", "files"],
+  "additionalProperties": false
+}
