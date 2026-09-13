@@ -199,6 +199,8 @@ class GateParsing(unittest.TestCase):
         coloured = "\x1b[33m 1:  19769d79b =  1:  fea616b8c oklabs: one\x1b[m\n\x1b[33m10:  c11da2e81 = 10:  b6e4d9c62 ci: ten\x1b[m\n"
         self.assertEqual(rr.range_diff_summary(coloured), {"=": 2, "!": 0, "<": 0, ">": 0})
         self.assertEqual(rr.format_range_diff({"=": 47, "!": 7, "<": 2, ">": 0}), "47 unchanged, 7 modified, 2 dropped, 0 added")
+        self.assertEqual(rr.format_range_diff({"=": 47, "!": 7, "<": 2, ">": 0}, (56, 54)), "47 unchanged, 7 modified, 2 dropped, 0 added")
+        self.assertIn("(PARTIAL: 18 of 55 rows", rr.format_range_diff({"=": 16, "!": 2, "<": 0, ">": 0}, (55, 55)))
 
 
 class Receipt(unittest.TestCase):
@@ -213,7 +215,7 @@ class Receipt(unittest.TestCase):
         ]
         autoresolved = [{"file": "apps/web/Sidebar.tsx", "rules": ["compose"], "patch": "x"}]
         tests = {"typecheck": "ok", "lint": "ok", "web": "4925 passed, 1 skipped"}
-        text = rr.build_receipt(repairs, autoresolved, tests, {"=": 50, "!": 4, "<": 1, ">": 1}, "https://run/1", True, False)
+        text = rr.build_receipt(repairs, autoresolved, tests, {"=": 50, "!": 4, "<": 1, ">": 1}, "https://run/1", True, False, (55, 55))
         self.assertIn("REPAIRED by agent — gate green, main pushed", text)
         self.assertIn("patches repaired: 2", text)
         self.assertIn("Zed SSH deep links -> resolved", text)
@@ -223,7 +225,9 @@ class Receipt(unittest.TestCase):
         self.assertIn("mechanical auto-resolves: 1", text)
         self.assertIn("agent: 3 call(s), 8m30s, tokens in 1010 (cached 200) / out 50 (reasoning 10)", text)
         self.assertIn("gate: typecheck: ok; lint: ok; web: 4925 passed, 1 skipped", text)
+        self.assertIn("stack: 55 -> 55 patches", text)
         self.assertIn("range-diff old stack vs new: 50 unchanged, 4 modified, 1 dropped, 1 added", text)
+        self.assertNotIn("PARTIAL", text)
         self.assertTrue(text.endswith("https://run/1"))
 
     def test_receipt_test_mode_header(self):

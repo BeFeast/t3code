@@ -14,7 +14,7 @@ Subcommands:
   transcript EVENTS.jsonl          human-readable rendering of a `codex exec --json` run
   tests-summary LOG                "N passed, M skipped" parsed from a vitest log
   range-diff-summary FILE          "= a, ! b, < c, > d" parsed from `git range-diff` output
-  receipt  --summary F [--autoresolved F] [--tests F] [--range-diff F] [--run-url URL] [--pushed 0|1] [--test-mode 0|1]
+  receipt  --summary F [--autoresolved F] [--tests F] [--range-diff F] [--run-url URL] [--pushed 0|1] [--test-mode 0|1] [--patches OLD:NEW]
 """
 
 from __future__ import annotations
@@ -282,11 +282,17 @@ def range_diff_summary(text: str) -> dict[str, int]:
     return counts
 
 
-def format_range_diff(counts: dict[str, int]) -> str:
-    return (
+def format_range_diff(counts: dict[str, int], patches: tuple[int, int] | None = None) -> str:
+    text = (
         f"{counts.get('=', 0)} unchanged, {counts.get('!', 0)} modified, "
         f"{counts.get('<', 0)} dropped, {counts.get('>', 0)} added"
     )
+    if patches:
+        rows = sum(counts.values())
+        expected = max(patches)
+        if rows < expected:
+            text += f" (PARTIAL: {rows} of {expected} rows — read the run log)"
+    return text
 
 
 # --------------------------------------------------------------------------
@@ -308,6 +314,7 @@ def build_receipt(
     run_url: str,
     pushed: bool,
     test_mode: bool,
+    patches: tuple[int, int] | None = None,
 ) -> str:
     """Telegram text for a run in which the repair lane did the work."""
     header = "t3code sync REPAIRED by agent"
@@ -351,8 +358,10 @@ def build_receipt(
     )
     if tests:
         lines.append("gate: " + "; ".join(f"{k}: {v}" for k, v in tests.items()))
+    if patches:
+        lines.append(f"stack: {patches[0]} -> {patches[1]} patches")
     if range_diff is not None:
-        lines.append("range-diff old stack vs new: " + format_range_diff(range_diff))
+        lines.append("range-diff old stack vs new: " + format_range_diff(range_diff, patches))
     if run_url:
         lines.append(run_url)
     return "\n".join(lines)
@@ -411,6 +420,7 @@ def main(argv: list[str]) -> int:
     p.add_argument("--run-url", default="")
     p.add_argument("--pushed", default="0")
     p.add_argument("--test-mode", default="0")
+    p.add_argument("--patches", default="", help="OLD:NEW patch counts, e.g. 55:55")
 
     args = parser.parse_args(argv)
 
@@ -463,6 +473,10 @@ def main(argv: list[str]) -> int:
         range_diff = None
         if args.range_diff and Path(args.range_diff).is_file():
             range_diff = range_diff_summary(Path(args.range_diff).read_text(encoding="utf-8", errors="replace"))
+        patches = None
+        if re.fullmatch(r"\d+:\d+", args.patches):
+            old_n, new_n = args.patches.split(":")
+            patches = (int(old_n), int(new_n))
         print(
             build_receipt(
                 read_jsonl(args.summary),
@@ -472,6 +486,7 @@ def main(argv: list[str]) -> int:
                 args.run_url,
                 args.pushed == "1",
                 args.test_mode == "1",
+                patches,
             )
         )
         return 0

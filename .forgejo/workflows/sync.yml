@@ -418,12 +418,15 @@ jobs:
         run: |
           RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_NUMBER}"
           if [ "${REPAIRED:-0}" = 1 ]; then
-            git range-diff --no-color "$OLD_BASE..$MAIN_OLD" "$ONTO..HEAD" > /tmp/range-diff.txt 2>&1 || true
-            echo "range-diff: $(python3 /tmp/helpers/rebase-repair-lib.py range-diff-summary /tmp/range-diff.txt) ($(wc -l < /tmp/range-diff.txt) lines)"
+            OLD_N=$(git rev-list --count "$OLD_BASE..$MAIN_OLD"); NEW_N=$(git rev-list --count "$ONTO..HEAD")
+            git range-diff --no-color "$OLD_BASE..$MAIN_OLD" "$ONTO..HEAD" > /tmp/range-diff.txt 2>/tmp/range-diff.err; echo "range-diff rc=$?"
+            echo "range-diff: $(python3 /tmp/helpers/rebase-repair-lib.py range-diff-summary /tmp/range-diff.txt) ($(wc -l < /tmp/range-diff.txt) lines, stack ${OLD_N} -> ${NEW_N} patches)"
             grep -E '^ *([0-9]+|-): ' /tmp/range-diff.txt | cut -c1-140 | head -n 80
+            [ -s /tmp/range-diff.err ] && { echo "range-diff stderr:"; head -n 10 /tmp/range-diff.err; } || true
+            echo "range-diff tail:"; tail -n 5 /tmp/range-diff.txt | cut -c1-200
             MSG=$(python3 /tmp/helpers/rebase-repair-lib.py receipt \
               --summary /tmp/repair-summary.jsonl --autoresolved /tmp/autoresolved.jsonl \
-              --tests /tmp/gate-results.txt --range-diff /tmp/range-diff.txt \
+              --tests /tmp/gate-results.txt --range-diff /tmp/range-diff.txt --patches "${OLD_N}:${NEW_N}" \
               --run-url "$RUN_URL" --pushed "${PUSHED:-0}" --test-mode "${TEST_MODE:-0}")
             echo "$MSG"
             /tmp/notify.sh default "$MSG"
