@@ -423,7 +423,11 @@ jobs:
           RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_NUMBER}"
           if [ "${REPAIRED:-0}" = 1 ]; then
             OLD_N=$(git rev-list --count "$OLD_BASE..$MAIN_OLD" 2>/dev/null || echo 0); NEW_N=$(git rev-list --count "$ONTO..HEAD" 2>/dev/null || echo 0)
-            git range-diff --no-color "$OLD_BASE..$MAIN_OLD" "$ONTO..HEAD" > /tmp/range-diff.txt 2>/tmp/range-diff.err; echo "range-diff rc=$?"
+            # --no-patch: the receipt needs the pair symbols, not the interdiffs,
+            # and generating the interdiffs is exactly what fails inside the CI
+            # container ("error: failed to generate diff", rc 128, runs 248-251)
+            # while the same command on maestro succeeds.
+            git range-diff --no-color --no-patch "$OLD_BASE..$MAIN_OLD" "$ONTO..HEAD" > /tmp/range-diff.txt 2>/tmp/range-diff.err; echo "range-diff rc=$?"
             echo "range-diff: $(python3 /tmp/helpers/rebase-repair-lib.py range-diff-summary /tmp/range-diff.txt) ($(wc -l < /tmp/range-diff.txt) lines, stack ${OLD_N} -> ${NEW_N} patches)"
             grep -E '^ *([0-9]+|-): ' /tmp/range-diff.txt | cut -c1-140 | head -n 80
             [ -s /tmp/range-diff.err ] && { echo "range-diff stderr:"; head -n 10 /tmp/range-diff.err; } || true
