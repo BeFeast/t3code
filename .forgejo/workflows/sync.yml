@@ -416,9 +416,13 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
+          # Receipts are informational: nothing in here may fail a run whose
+          # gate was green (run 250: a git range-diff fatal under `set -e`
+          # turned a repaired, fully green replay into a failed job).
+          set +e
           RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_NUMBER}"
           if [ "${REPAIRED:-0}" = 1 ]; then
-            OLD_N=$(git rev-list --count "$OLD_BASE..$MAIN_OLD"); NEW_N=$(git rev-list --count "$ONTO..HEAD")
+            OLD_N=$(git rev-list --count "$OLD_BASE..$MAIN_OLD" 2>/dev/null || echo 0); NEW_N=$(git rev-list --count "$ONTO..HEAD" 2>/dev/null || echo 0)
             git range-diff --no-color "$OLD_BASE..$MAIN_OLD" "$ONTO..HEAD" > /tmp/range-diff.txt 2>/tmp/range-diff.err; echo "range-diff rc=$?"
             echo "range-diff: $(python3 /tmp/helpers/rebase-repair-lib.py range-diff-summary /tmp/range-diff.txt) ($(wc -l < /tmp/range-diff.txt) lines, stack ${OLD_N} -> ${NEW_N} patches)"
             grep -E '^ *([0-9]+|-): ' /tmp/range-diff.txt | cut -c1-140 | head -n 80
@@ -432,6 +436,7 @@ jobs:
             /tmp/notify.sh default "$MSG"
             exit 0
           fi
+          set -e
           [ -f /tmp/autoresolved.jsonl ] || { echo "nothing auto-resolved"; exit 0; }
           LIST=$(python3 -c '
           import json, sys
