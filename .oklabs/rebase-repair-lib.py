@@ -259,12 +259,17 @@ def render_transcript(events_text: str, max_output_lines: int = 20) -> str:
 # --------------------------------------------------------------------------
 
 TESTS_LINE_RE = re.compile(r"^\s*Tests\s+(.+?)\s*\(\d+\)\s*$", re.MULTILINE)
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 RANGE_DIFF_RE = re.compile(r"^\s*(?:\d+|-):\s+\S+\s+([=!<>])\s+", re.MULTILINE)
 
 
 def tests_summary(log: str) -> str:
-    """Last vitest ``Tests N passed | M skipped (T)`` line, normalised."""
-    lines = TESTS_LINE_RE.findall(log)
+    """Last vitest ``Tests N passed | M skipped (T)`` line, normalised.
+
+    ``vp test run`` colours its summary even without a TTY, so the escape
+    sequences are stripped first.
+    """
+    lines = TESTS_LINE_RE.findall(ANSI_RE.sub("", log))
     if not lines:
         return "no test summary found"
     return re.sub(r"\s*\|\s*", ", ", lines[-1]).strip()

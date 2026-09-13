@@ -243,6 +243,7 @@ jobs:
         env:
           CLIPROXY_API_KEY: ${{ secrets.CLIPROXY_API_KEY }}
         run: |
+          export PATH="${CODEX_PREFIX}/bin:${PATH}"
           git checkout -B main "$MAIN_OLD"
           rm -rf "$REPAIR_STATE_DIR"; mkdir -p "$REPAIR_STATE_DIR"
 
@@ -307,6 +308,7 @@ jobs:
         env:
           CLIPROXY_API_KEY: ${{ secrets.CLIPROXY_API_KEY }}
         run: |
+          export PATH="${CODEX_PREFIX}/bin:${PATH}"
           set +e
           pnpm install --frozen-lockfile >/tmp/install.log 2>&1 || {
             tail -n 40 /tmp/install.log

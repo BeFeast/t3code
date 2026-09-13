@@ -184,6 +184,8 @@ class GateParsing(unittest.TestCase):
         self.assertEqual(rr.tests_summary(log), "4925 passed, 1 skipped")
         self.assertEqual(rr.tests_summary("      Tests  418 passed (418)\n"), "418 passed")
         self.assertEqual(rr.tests_summary("nothing here"), "no test summary found")
+        coloured = "\x1b[2m Test Files \x1b[22m \x1b[1m\x1b[32m23 passed\x1b[39m\x1b[22m\x1b[90m (23)\x1b[39m\n\x1b[2m      Tests \x1b[22m \x1b[1m\x1b[32m388 passed\x1b[39m\x1b[22m\x1b[90m (388)\x1b[39m\n"
+        self.assertEqual(rr.tests_summary(coloured), "388 passed")
 
     def test_range_diff_summary(self):
         text = (
