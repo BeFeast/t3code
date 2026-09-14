@@ -362,7 +362,7 @@ repair_conflicts() {
           fail "conflict markers remain after the agent (verdict $VERDICT) at $patch: $(echo "$leftovers" | tr '\n' ' ')"
         fi
         [ "$VERDICT" = RESOLVED ] || log "no verdict from the agent; markers are gone, treating as RESOLVED"
-        git add -A -- . >> "$STATE_DIR/rebase.log" 2>&1
+        git add -A -- . ':!**/__pycache__/**' >> "$STATE_DIR/rebase.log" 2>&1
         [ -z "$(unmerged)" ] || fail "files still unmerged after staging at $patch: $(unmerged | tr '\n' ' ')"
         { echo "--- staged after repair:"; git diff --cached --stat=110 | tail -n 25; } >> "$TRANSCRIPT"
         # Receipt lists what the agent touched: the files that stopped the rebase
@@ -427,7 +427,7 @@ repair_typecheck() {
       local files subject
       files=$(git status --porcelain | awk '{print $2}' | python3 -c 'import json,sys;print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')
       subject=$(printf '%s' "$REASON" | tr '\n' ' ' | cut -c1-72)
-      git add -A -- .
+      git add -A -- . ':!**/__pycache__/**'
       git commit -q -m "oklabs: repair: adapt fork-only code to upstream${subject:+ — $subject}" \
         -m "Automated typecheck repair after the nightly rebase (rebase-repair.sh, $REPAIR_AGENT/$REPAIR_MODEL)." \
         -m "$(sed 's/^/  /' "$errors" | head -n 30)" \

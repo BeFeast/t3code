@@ -382,9 +382,20 @@ jobs:
           echo "touched files:"; sed 's/^/  /' /tmp/touched-files.txt
           python3 /tmp/helpers/rebase-repair-lib.py packages < /tmp/touched-files.txt > /tmp/test-packages.txt
           [ -s /tmp/test-packages.txt ] || { echo "no package with a test suite was touched"; exit 0; }
+          # Several server suites assert EACCES/read-only paths (unwritable config
+          # dir, settings file, theme publish). Root ignores file modes, so as root
+          # they fail regardless of the repair (run 255, 2026-09-14). Run the suites
+          # as an unprivileged user; git steps after this stay root (safe.directory).
+          RUN_AS=""
+          if [ "$(id -u)" = 0 ]; then
+            id -u ci >/dev/null 2>&1 || useradd -m -u 1001 -s /bin/bash ci
+            t0=$(date +%s); chown -R ci:ci "$GITHUB_WORKSPACE"; echo "workspace chown -> ci ($(( $(date +%s)-t0 ))s)"
+            git config --global --add safe.directory '*'
+            RUN_AS="runuser -u ci -- env HOME=/home/ci PATH=$PATH CI=true HUSKY=0"
+          fi
           while IFS=$'\t' read -r id dir; do
-            echo "== tests: $id ($dir)"
-            (cd "$dir" && pnpm run test --maxWorkers=2) >"/tmp/test-$id.log" 2>&1; rc=$?
+            echo "== tests: $id ($dir) as $(${RUN_AS:-env} id -un)"
+            (cd "$dir" && $RUN_AS pnpm run test --maxWorkers=2) >"/tmp/test-$id.log" 2>&1; rc=$?
             SUMMARY=$(python3 /tmp/helpers/rebase-repair-lib.py tests-summary "/tmp/test-$id.log")
             echo "   $id: rc=$rc, $SUMMARY"
             if [ "$rc" -ne 0 ]; then
