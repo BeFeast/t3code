@@ -69,9 +69,49 @@ STAGED=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["versio
 [[ "$STAGED" == "$VERSION" ]] || { echo "staged version $STAGED != $VERSION" >&2; exit 1; }
 
 cp -a "$DIST" "$PKG/dist"
+
+# Upstream #11316 (2026-09-14) loads @ff-labs/fff-node through createRequire()
+# so the bundle also works as a Node single-executable. The package is ESM-only
+# (exports: "import"), so a plain require() fails on every Node we run with
+# ERR_PACKAGE_PATH_NOT_EXPORTED and the CLI dies before `--version`. Our
+# tarball is never a single-executable: load it as an ESM import instead.
+python3 - "$PKG/dist/bin.mjs" <<'PY'
+import sys
+path = sys.argv[1]
+with open(path, encoding="utf-8") as fh:
+    text = fh.read()
+old = 'const { FileFinder } = NodeModule.createRequire(import.meta.url)("@ff-labs/fff-node");'
+new = 'const { FileFinder } = await import("@ff-labs/fff-node");'
+count = text.count(old)
+if count:
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(text.replace(old, new))
+    print(f"fff-node loader: patched {count} require() call(s) into ESM import")
+elif 'createRequire(import.meta.url)("@ff-labs/fff-node")' in text:
+    sys.exit("fff-node loader: require() pattern changed upstream; update publish-server.sh")
+else:
+    print("fff-node loader: no createRequire() call in the bundle, nothing to patch")
+PY
 mkdir -p "$PKG/dist/resource-monitor/linux-x64"
 cp -f "$RESOURCE_MONITOR" "$PKG/dist/resource-monitor/linux-x64/t3-resource-monitor"
 chmod +x "$PKG/dist/resource-monitor/linux-x64/t3-resource-monitor"
+
+# Smoke test: the staged package must install and start exactly like maestro
+# installs it (same npm flags). A bundle that cannot even print its version
+# never reaches the registry (2026-09-14: the pair was complete, the server
+# was dead on disk, and the desktop could not open its SSH environment).
+SMOKE=$(mktemp -d -t t3code-server-smoke-XXXXXX)
+cp -a "$PKG" "$SMOKE/package"
+if ! (cd "$SMOKE/package" && npm install --omit=dev --no-audit --no-fund \
+      --allow-scripts=node-pty --allow-scripts=msgpackr-extract) >"$SMOKE/npm.log" 2>&1; then
+  tail -n 30 "$SMOKE/npm.log" >&2; echo "smoke test: npm install of the staged package failed" >&2; exit 1
+fi
+if ! SMOKE_VERSION=$(cd "$SMOKE/package" && node dist/bin.mjs --version 2>"$SMOKE/version.err"); then
+  tail -n 30 "$SMOKE/version.err" >&2; echo "smoke test: node dist/bin.mjs --version failed (node $(node -v))" >&2; exit 1
+fi
+[[ "$SMOKE_VERSION" == "t3 v$VERSION" ]] || { echo "smoke test: --version printed '$SMOKE_VERSION', expected 't3 v$VERSION'" >&2; exit 1; }
+echo "smoke test: $SMOKE_VERSION starts under node $(node -v)"
+rm -rf "$SMOKE"
 
 TARBALL="$STAGE/t3-${VERSION}.tgz"
 tar -czf "$TARBALL" -C "$STAGE" --owner=0 --group=0 --numeric-owner package
