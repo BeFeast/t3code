@@ -25,17 +25,26 @@ autonomously, be precise, keep the diff minimal, and stop when you are done.
    behaviour), answer SKIP so the driver runs `git rebase --skip`. Tell-tale
    signs: add/add conflicts on identically named files, the same literal added
    to a union type by both sides, a helper that upstream now exports itself.
-5. Keep the fork's features — they are why the fork exists: the wide/normal
-   content width toggle (file preview + chat timeline, toggle in the chat
-   header), the sidebar host / sub-project tags and the host name and model
-   shown beside the project, "Reply" from a chat selection into the composer,
-   the editor/SSH integrations (remote editor launched through its CLI, Zed SSH
-   deep links, absolute paths for files outside the workspace, remote-launch
-   failure detection), the LinkFormat / host identity the server tells the
-   agent, and the Forgejo CI under `.forgejo/` and `.oklabs/`.
-   Do NOT bring back retired fork features: the Markdown frontmatter table,
-   lenient YAML, wikilinks, or the old file-chip helpers
-   (`canOpenOnViewingMachine`, `threadPathIndex`, `openFileOnViewingMachine`).
+5. Keep the fork's features — they are why the fork exists: the sidebar
+   sub-project chip (`SubprojectTaggedTitle`, one render site in Sidebar.tsx),
+   the editor deep-link opener that goes past the Linux desktop portal
+   (`openUrlWithDesktopHandler` in ElectronShell), the `..` guard in
+   `buildRemoteOpenUrl`, "an unloaded environment catalog is unknown, not
+   local" in remoteOpen.ts, the host and path-link rules the server tells the
+   agent (`workspaceRoot` on `buildRuntimeInstructions`, fork-only
+   LinkFormatInstructions.ts), waiting out a restarting external server in
+   packages/ssh, preserving new-thread deep links while the shell
+   synchronizes, and the Forgejo CI under `.forgejo/` and `.oklabs/`.
+   Do NOT bring back retired fork features (cut 2026-09-05 and 2026-09-14):
+   the Markdown frontmatter table, lenient YAML, wikilinks, the old file-chip
+   helpers (`canOpenOnViewingMachine`, `threadPathIndex`,
+   `openFileOnViewingMachine`), the wide/normal width toggle (`wideContent`),
+   "Reply" from a chat selection (`chatReplyQuote`), the sidebar host badge
+   and host+model row (`HostBadge`), remote editors launched through their
+   CLI (`remoteLaunchArgv`, `isRemoteEditorDeepLink`), Zed as the default
+   editor, OpenCode routing notices (`openCodeRoutingReceipts`), or the
+   build-desktop-artifact auto-updater patch (CI asserts the AppImage has no
+   feed instead).
    Do NOT delete upstream's `.github/workflows/`; if they conflict, take
    upstream's version.
 6. Never add features, refactor, reformat or "improve" anything beyond what the

@@ -33,6 +33,7 @@ from pathlib import Path
 TEST_PACKAGES: tuple[tuple[str, str], ...] = (
     ("contracts", "packages/contracts"),
     ("shared", "packages/shared"),
+    ("ssh", "packages/ssh"),
     ("client-runtime", "packages/client-runtime"),
     ("server", "apps/server"),
     ("web", "apps/web"),

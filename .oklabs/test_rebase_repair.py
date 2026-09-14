@@ -28,9 +28,11 @@ class PackageMapping(unittest.TestCase):
         self.assertEqual(rr.package_for("packages/contracts/src/editor.ts"), "contracts")
         self.assertEqual(rr.package_for("packages/shared/src/sourceControl.test.ts"), "shared")
         self.assertEqual(rr.package_for("packages/client-runtime/src/x.ts"), "client-runtime")
+        # The ssh-wait patch lives in packages/ssh; its suite (37 tests, ~8 s) is cheap.
+        self.assertEqual(rr.package_for("packages/ssh/src/tunnel.ts"), "ssh")
 
     def test_uncovered_paths_map_to_nothing(self):
-        for path in (".forgejo/workflows/sync.yml", "apps/marketing/index.ts", "packages/ssh/x.ts", "docs/a.md", "apps/webby/x.ts"):
+        for path in (".forgejo/workflows/sync.yml", "apps/marketing/index.ts", "packages/relay/x.ts", "docs/a.md", "apps/webby/x.ts"):
             self.assertIsNone(rr.package_for(path), path)
 
     def test_run_order_and_dedup(self):
@@ -85,11 +87,13 @@ class PromptAssembly(unittest.TestCase):
             "keep both sides",
             "Adapt to upstream refactors",
             "superseded by upstream is dropped",
-            "width toggle",
-            "sub-project tags",
-            "Reply",
-            "Zed SSH",
-            "LinkFormat",
+            "sub-project chip",
+            "desktop portal",
+            "`..` guard",
+            "restarting external server",
+            "LinkFormatInstructions",
+            "Do NOT bring back retired fork features",
+            "width toggle (`wideContent`)",
             "Never add features",
             "Typecheck is the safety net",
             "`.github/workflows/`",
