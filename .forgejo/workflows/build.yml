@@ -25,7 +25,9 @@
 #    then auto-detects a GitHub publish provider and crashes in
 #    computeChannelNames (null.channel) after the AppImage is built
 #    (run 103). Blank those vars for the build step (buildEnv drops
-#    empty strings). The OK Labs patch already returns no publish feed.
+#    empty strings). Since 2026-09-14 the fork no longer patches
+#    build-desktop-artifact.ts: the blanked env is what keeps the update
+#    feed out, and the AppImage is inspected after the build to prove it.
 name: build
 
 on:
@@ -171,6 +173,11 @@ jobs:
           GH_TOKEN: ""
           GITHUB_REPOSITORY: ""
         run: |
+          # build-desktop-artifact derives the electron-updater feed from
+          # GITHUB_REPOSITORY / T3CODE_DESKTOP_UPDATE_REPOSITORY; both must be
+          # empty here or the AppImage would poll GitHub releases for updates.
+          test -z "${GITHUB_REPOSITORY:-}" || { echo "GITHUB_REPOSITORY must be blank for the desktop build: '$GITHUB_REPOSITORY'"; exit 1; }
+          test -z "${T3CODE_DESKTOP_UPDATE_REPOSITORY:-}" || { echo "T3CODE_DESKTOP_UPDATE_REPOSITORY must be blank for the desktop build"; exit 1; }
           git config core.hooksPath /tmp/no-hooks
           export PATH="$(pwd)/node_modules/.bin:${HOME}/.cargo/bin:${PATH}"
           command -v vp
@@ -187,6 +194,26 @@ jobs:
           test -n "$APPIMG" && test -f "$APPIMG"
           echo "APPIMAGE=$APPIMG" >> "$GITHUB_ENV"
           test -x native/resource-monitor/target/x86_64-unknown-linux-gnu/release/t3-resource-monitor
+
+      - name: Assert the AppImage carries no update feed
+        run: |
+          # The fork used to patch build-desktop-artifact.ts to never emit a
+          # feed; that patch is gone (stack cut 2026-09-14) and the blanked env
+          # in the build step is the only guard left. Prove it on the artifact:
+          # resources/app-update.yml inside the image, or a latest*.yml next
+          # to it, would make the desktop app poll GitHub releases.
+          APP=$(readlink -f "$APPIMAGE")
+          EXTRACT=$(mktemp -d)
+          (cd "$EXTRACT" && "$APP" --appimage-extract >/dev/null) || {
+            echo "could not extract $APP for inspection"; exit 1;
+          }
+          test -d "$EXTRACT/squashfs-root/resources"
+          FEED=$(find "$EXTRACT/squashfs-root" -name 'app-update.yml' -print -quit)
+          test -z "$FEED" || { echo "update feed found in AppImage: $FEED"; exit 1; }
+          LATEST=$(find "$(dirname "$APP")" -maxdepth 1 -name 'latest*.yml' -print -quit)
+          test -z "$LATEST" || { echo "electron-builder wrote an update manifest: $LATEST"; exit 1; }
+          echo "no update feed in $(basename "$APP")"
+          rm -rf "$EXTRACT"
 
       - name: Wrap AppImage in .deb
         run: |
