@@ -96,23 +96,6 @@ mkdir -p "$PKG/dist/resource-monitor/linux-x64"
 cp -f "$RESOURCE_MONITOR" "$PKG/dist/resource-monitor/linux-x64/t3-resource-monitor"
 chmod +x "$PKG/dist/resource-monitor/linux-x64/t3-resource-monitor"
 
-# Smoke test: the staged package must install and start exactly like maestro
-# installs it (same npm flags). A bundle that cannot even print its version
-# never reaches the registry (2026-09-14: the pair was complete, the server
-# was dead on disk, and the desktop could not open its SSH environment).
-SMOKE=$(mktemp -d -t t3code-server-smoke-XXXXXX)
-cp -a "$PKG" "$SMOKE/package"
-if ! (cd "$SMOKE/package" && npm install --omit=dev --no-audit --no-fund \
-      --allow-scripts=node-pty --allow-scripts=msgpackr-extract) >"$SMOKE/npm.log" 2>&1; then
-  tail -n 30 "$SMOKE/npm.log" >&2; echo "smoke test: npm install of the staged package failed" >&2; exit 1
-fi
-if ! SMOKE_VERSION=$(cd "$SMOKE/package" && node dist/bin.mjs --version 2>"$SMOKE/version.err"); then
-  tail -n 30 "$SMOKE/version.err" >&2; echo "smoke test: node dist/bin.mjs --version failed (node $(node -v))" >&2; exit 1
-fi
-[[ "$SMOKE_VERSION" == "t3 v$VERSION" ]] || { echo "smoke test: --version printed '$SMOKE_VERSION', expected 't3 v$VERSION'" >&2; exit 1; }
-echo "smoke test: $SMOKE_VERSION starts under node $(node -v)"
-rm -rf "$SMOKE"
-
 TARBALL="$STAGE/t3-${VERSION}.tgz"
 tar -czf "$TARBALL" -C "$STAGE" --owner=0 --group=0 --numeric-owner package
 LISTING="$STAGE/tarball.listing"
@@ -120,6 +103,24 @@ tar -tzf "$TARBALL" >"$LISTING"
 for required in package/package.json package/dist/bin.mjs package/dist/resource-monitor/linux-x64/t3-resource-monitor; do
   grep -qx "$required" "$LISTING" || { echo "tarball missing $required" >&2; exit 1; }
 done
+
+# Smoke test: install the finished tarball exactly the way maestro installs it
+# (global npm install of the tarball — a project-style `npm install` inside the
+# package dir chokes on the pnpm override selectors, runbook gotcha 1) and make
+# the CLI print its version. A bundle that cannot start never reaches the
+# registry (2026-09-14: the pair was complete, the server was dead on disk).
+SMOKE=$(mktemp -d -t t3code-server-smoke-XXXXXX)
+if ! npm install -g --prefix "$SMOKE/prefix" "$TARBALL" --no-audit --no-fund \
+      --allow-scripts=node-pty --allow-scripts=msgpackr-extract >"$SMOKE/npm.log" 2>&1; then
+  tail -n 30 "$SMOKE/npm.log" >&2; echo "smoke test: npm install -g of the tarball failed" >&2; exit 1
+fi
+SMOKE_BIN="$SMOKE/prefix/lib/node_modules/t3/dist/bin.mjs"
+if ! SMOKE_VERSION=$(node "$SMOKE_BIN" --version 2>"$SMOKE/version.err"); then
+  tail -n 30 "$SMOKE/version.err" >&2; echo "smoke test: node dist/bin.mjs --version failed (node $(node -v))" >&2; exit 1
+fi
+[[ "$SMOKE_VERSION" == "t3 v$VERSION" ]] || { echo "smoke test: --version printed '$SMOKE_VERSION', expected 't3 v$VERSION'" >&2; exit 1; }
+echo "smoke test: $SMOKE_VERSION starts under node $(node -v)"
+rm -rf "$SMOKE"
 
 # Copy aside for the workflow artifact (VERSION may contain '+')
 mkdir -p "$REPO/build"
