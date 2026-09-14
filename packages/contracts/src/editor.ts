@@ -127,6 +127,13 @@ export const buildRemoteOpenUrl = (input: {
   }
   // Windows server paths (`C:\...`) appear as `/C:/...` in vscode-remote URIs.
   const posixPath = input.absolutePath.replaceAll("\\", "/");
+  // `..` survives percent-encoding and `new URL()` normalizes it, which walks
+  // segments off the front of the link -- far enough and the host itself is
+  // consumed, leaving a valid-looking link to a machine nobody named. A path
+  // being opened is always already absolute, so refuse rather than resolve.
+  if (posixPath.split("/").some((segment) => segment === "..")) {
+    return undefined;
+  }
   const rootedPath = posixPath.startsWith("/") ? posixPath : `/${posixPath}`;
   const encodedHost = encodeURIComponent(input.host);
   if (input.editor === "zed") {

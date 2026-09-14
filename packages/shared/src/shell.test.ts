@@ -7,6 +7,11 @@ import * as Path from "effect/Path";
 import * as TestClock from "effect/testing/TestClock";
 import { describe, expect, it, vi } from "vite-plus/test";
 
+// @effect-diagnostics-next-line nodeBuiltinImport:off - spawns sh as a stand-in for xdg-open.
+import * as NodeChildProcess from "node:child_process";
+
+import { openUrlWithDesktopHandler } from "./shell.ts";
+
 import {
   CommandAvailability,
   CommandResolutionCache,
@@ -720,4 +725,44 @@ effectIt.layer(NodeServices.layer)("resolveWindowsEnvironment", (it) => {
       expect(commandAvailable).toHaveBeenCalledTimes(1);
     }),
   );
+});
+
+describe("openUrlWithDesktopHandler", () => {
+  // Stand in for `xdg-open` with a shell one-liner; the URL argument is irrelevant.
+  const launcher = (script: string): typeof NodeChildProcess.spawn =>
+    ((_command: string, _args: readonly string[], options: NodeChildProcess.SpawnOptions) =>
+      NodeChildProcess.spawn("sh", ["-c", script], options)) as typeof NodeChildProcess.spawn;
+
+  it("reports failure when the launcher dies immediately", async () => {
+    // The real shape this guards: `xdg-open` exits non-zero when no handler is
+    // registered for the scheme. Reporting that as a successful open is what
+    // made a broken editor click look like nothing happening at all.
+    await expect(openUrlWithDesktopHandler("zed://x", launcher("exit 3"), 400)).resolves.toBe(
+      false,
+    );
+  });
+
+  it("reports failure when the binary does not exist", async () => {
+    const missing: typeof NodeChildProcess.spawn = ((
+      _command: string,
+      args: readonly string[],
+      options: NodeChildProcess.SpawnOptions,
+    ) =>
+      NodeChildProcess.spawn(
+        "t3-no-such-binary-abcxyz",
+        [...args],
+        options,
+      )) as typeof NodeChildProcess.spawn;
+    await expect(openUrlWithDesktopHandler("zed://x", missing, 400)).resolves.toBe(false);
+  });
+
+  it("reports success for a launcher that keeps running past the grace window", async () => {
+    await expect(openUrlWithDesktopHandler("zed://x", launcher("sleep 3"), 200)).resolves.toBe(
+      true,
+    );
+  });
+
+  it("reports success for a launcher that exits cleanly, as a handoff does", async () => {
+    await expect(openUrlWithDesktopHandler("zed://x", launcher("exit 0"), 400)).resolves.toBe(true);
+  });
 });

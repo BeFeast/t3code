@@ -166,3 +166,36 @@ describe("buildRemoteOpenUrl", () => {
     );
   });
 });
+
+describe("buildRemoteOpenUrl path traversal guard", () => {
+  it("refuses a path with `..`, which would pop the host out of the link", () => {
+    // `..` survives percent-encoding and new URL() normalizes it away, so a
+    // path with enough ../ pops the real host out and leaves a stranger:
+    // zed://ssh/maestro/home/god/src/../../../../../etc/passwd -> host "etc".
+    // A host-shape check cannot catch that ("etc" looks like a host), so the
+    // builder refuses the path instead.
+    expect(
+      buildRemoteOpenUrl({
+        editor: "zed",
+        host: "maestro",
+        absolutePath: "/home/god/src/../../../../../etc/passwd",
+      }),
+    ).toBe(undefined);
+    expect(
+      buildRemoteOpenUrl({
+        editor: "cursor",
+        host: "maestro",
+        absolutePath: "/home/god/../../etc/passwd",
+      }),
+    ).toBe(undefined);
+  });
+
+  it("still builds an ordinary link, including one with a port in the host", () => {
+    expect(
+      buildRemoteOpenUrl({ editor: "zed", host: "maestro", absolutePath: "/home/god/x.md" }),
+    ).toBe("zed://ssh/maestro/home/god/x.md");
+    expect(
+      buildRemoteOpenUrl({ editor: "zed", host: "maestro:2222", absolutePath: "/home/god/x.md" }),
+    ).toBe("zed://ssh/maestro%3A2222/home/god/x.md");
+  });
+});

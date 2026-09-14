@@ -2,6 +2,7 @@
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeChildProcess from "node:child_process";
+import * as NodeTimersPromises from "node:timers/promises";
 import * as NodeFS from "node:fs";
 import * as Cache from "effect/Cache";
 import * as Clock from "effect/Clock";
@@ -811,23 +812,40 @@ export const resolveWindowsEnvironment = Effect.fn("shell.resolveWindowsEnvironm
  * and nothing launches. Verified on GNOME/Wayland with a `zed://` handler that
  * `xdg-open` invokes without complaint.
  *
- * Resolves true only once the child has actually spawned. argv is an array and
- * no shell is involved, so the URL is never interpreted as a command.
+ * Resolves true once the child has spawned and survived the grace window, or
+ * exited cleanly within it (a handler that hands off and returns). A launcher
+ * that dies at once with a non-zero code -- `xdg-open` with no handler for
+ * the scheme -- is reported as false, so the caller falls back instead of
+ * recording a success nobody saw. argv is an array and no shell is involved,
+ * so the URL is never interpreted as a command.
  */
+const IMMEDIATE_EXIT_GRACE_MS = 1_500;
+
 export function openUrlWithDesktopHandler(
   url: string,
   spawnFn: typeof NodeChildProcess.spawn = NodeChildProcess.spawn,
+  graceMs: number = IMMEDIATE_EXIT_GRACE_MS,
 ): Promise<boolean> {
   return new Promise((resolve) => {
+    let settled = false;
+    const settle = (value: boolean) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
     try {
       const child = spawnFn("xdg-open", [url], { detached: true, stdio: "ignore" });
-      child.once("error", () => resolve(false));
+      child.once("error", () => settle(false));
+      // "Spawned" alone cannot tell a handler that opened from one that
+      // failed immediately. Watch just long enough to catch the immediate
+      // exit, then let the real process outlive us.
+      child.once("exit", (code) => settle(code === 0));
       child.once("spawn", () => {
         child.unref();
-        resolve(true);
+        void NodeTimersPromises.setTimeout(graceMs).then(() => settle(true));
       });
     } catch {
-      resolve(false);
+      settle(false);
     }
   });
 }
