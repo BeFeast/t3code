@@ -1,3 +1,18 @@
+> [!NOTE]
+> **This is the OK Labs fork of [pingdotgg/t3code](https://github.com/pingdotgg/t3code).** It is rebased onto upstream `main` every night and keeps a small set of patches on top. Everything below this box is the upstream README.
+>
+> **What this fork has that upstream does not:**
+>
+> - **Sub-project tags in the sidebar.** Each thread shows a chip with the sub-project it is about (for example `Dev/maestro` inside a large workspace), and the name is not repeated when the title already starts with it.
+> - **Host and link context for the agent.** The agent is told which host the session's server runs on and how to write file links that are clickable in T3 Code, through the shared runtime instructions.
+> - **Editor deep links on Linux.** Deep links open through `xdg-open` instead of the Electron desktop portal, which on portal-backed desktops (measured on GNOME/Wayland) reports success for `zed://` and similar schemes without launching anything. Remote open paths containing `..` are refused, and a launcher that exits right away is reported instead of failing silently.
+> - **SSH server reuse.** When an external server is restarting, the desktop waits up to 20 s for it instead of starting a replacement.
+> - **Thread deep links.** A link to a newly created thread survives the shell's initial synchronization, unless that synchronization reports an error.
+> - **Fork build identity.** When the desktop app starts a server over SSH, it drops the fork's `+oklabs` build suffix from the version, so the remote downloads the matching upstream server archive instead of one that does not exist.
+> - **Forgejo Actions CI.** A nightly sync rebases the patch stack onto upstream, resolves mechanical conflicts automatically, and hands real conflicts and type errors to a coding agent. Builds a `.deb` and a server tarball, checks that the AppImage has no auto-update feed, and sends failure alerts to Telegram.
+>
+> Primary repository: [git.oklabs.uk/BeFeast/t3code](https://git.oklabs.uk/BeFeast/t3code). This GitHub repository is a public mirror.
+
 # T3 Code
 
 T3 Code is an "agent harness control surface". It enables control of the agents on your machine with a best-in-class mobile app ([iOS](https://apps.apple.com/us/app/t3-code-remote-claude-more/id6787819824), [Android](https://play.google.com/store/apps/details?id=com.t3tools.t3code)), [web app](https://app.t3.codes) and [Electron-based desktop app](https://t3.codes).
